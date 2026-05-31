@@ -363,11 +363,14 @@ async function sendWebhook(products) {
 async function run() {
   const browser = await chromium.launch({
     headless: true,
+    chromiumSandbox: false,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--disable-gpu'
+      '--disable-gpu',
+      '--single-process',
+      '--no-zygote'
     ]
   });
 

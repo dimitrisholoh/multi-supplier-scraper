@@ -1,10 +1,12 @@
 {
-  "name": "julian-playwright-worker",
+  "name": "multi-supplier-scraper",
   "version": "1.0.0",
-  "description": "Julian B2B catalog worker",
+  "description": "Multi supplier scraping workers",
   "main": "scrape-julian.js",
   "scripts": {
-    "start": "node scrape-julian.js"
+    "start": "node scrape-julian.js",
+    "julian:full": "node scrape-julian.js",
+    "julian:delta": "node scrape-julian-delta.js"
   },
   "dependencies": {
     "axios": "^1.7.2",

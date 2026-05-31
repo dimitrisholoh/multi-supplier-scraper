@@ -5,8 +5,9 @@ const crypto = require('crypto');
 const SUPPLIER_NAME = 'Julian Fashion Srl';
 const SUPPLIER_SLUG = 'julian-fashion';
 
-const LIMIT_PRODUCTS = Number(process.env.LIMIT_PRODUCTS || 5);
-const MAX_PAGES = Number(process.env.MAX_PAGES || 1);
+const LIMIT_PRODUCTS = Number(process.env.LIMIT_PRODUCTS || 48);
+const START_PAGE = Number(process.env.START_PAGE || 1);
+const MAX_PAGES = Number(process.env.MAX_PAGES || 3);
 
 const LISTING_URL = process.env.JULIAN_LISTING_URL || 'https://b2bfashion.online/306-all';
 
@@ -368,7 +369,7 @@ async function openListing(page, pageNumber = 1) {
   return productCount;
 }
 
-async function collectListingCards(page) {
+async function collectListingCards(page, pageNumber) {
   const cards = [];
   const productCards = page.locator('.product-miniature');
   const count = await productCards.count();
@@ -462,6 +463,7 @@ async function collectListingCards(page) {
     cards.push({
       index: i + 1,
       card_index: i,
+      page_number: pageNumber,
       brand,
       title: null,
       season,
@@ -516,116 +518,6 @@ async function closeModal(page) {
   await page.keyboard.press('Escape').catch(() => {});
   await page.waitForTimeout(700);
 }
-async function clickQuickviewOnce(page, card, attempt) {
-  console.log('Quickview hybrid attempt:', {
-    index: card.index,
-    attempt,
-    brand: card.brand,
-    product_code: card.product_code
-  });
-
-  await closeModal(page);
-
-  let capturedUrl = null;
-
-  const onRequest = request => {
-    const url = request.url();
-
-    if (
-      url.includes('controller=product') &&
-      url.includes('action=quickview') &&
-      url.includes('id_product')
-    ) {
-      capturedUrl = url;
-      console.log('CAPTURED QUICKVIEW URL:', url);
-    }
-  };
-
-  page.on('request', onRequest);
-
-  try {
-    const cardLocator = page.locator('.product-miniature').nth(card.card_index);
-
-    await cardLocator.scrollIntoViewIfNeeded().catch(() => {});
-    await page.waitForTimeout(700);
-
-    await cardLocator.hover({ force: true }).catch(() => {});
-    await page.waitForTimeout(500);
-
-    const button = cardLocator
-      .locator('[data-link-action="quickview"], .quick-view, .button-action.quick-view')
-      .first();
-
-    if (!(await button.count())) {
-      throw new Error('Quickview button not found');
-    }
-
-    const responsePromise = page.waitForResponse(
-      response => {
-        const url = response.url();
-
-        return (
-          response.status() === 200 &&
-          url.includes('controller=product') &&
-          url.includes('action=quickview') &&
-          url.includes('id_product')
-        );
-      },
-      { timeout: 8000 }
-    ).catch(() => null);
-
-    console.log(
-      'BUTTON HTML:',
-      await button.evaluate(el => el.outerHTML)
-    );
-    
-    
-    await button.click({ force: true, timeout: 10000 });
-
-    let json = null;
-
-    const response = await responsePromise;
-
-    if (response) {
-      console.log('CAPTURED RESPONSE URL:', response.url());
-      json = await response.json();
-    }
-
-    if (!json && capturedUrl) {
-      console.log('Fallback direct request:', capturedUrl);
-
-      const directResponse = await page.request.get(capturedUrl, {
-        timeout: 30000,
-        headers: {
-          'X-Requested-With': 'XMLHttpRequest',
-          'Accept': 'application/json, text/javascript, */*; q=0.01'
-        }
-      });
-
-      if (!directResponse.ok()) {
-        throw new Error(`Fallback request failed: ${directResponse.status()}`);
-      }
-
-      json = await directResponse.json();
-    }
-
-    if (!json) {
-      throw new Error('No quickview response and no captured URL');
-    }
-
-    if (!json.product) {
-      throw new Error('No product in quickview response');
-    }
-
-    return {
-      product: json.product,
-      quickview_html: json.quickview_html || ''
-    };
-  } finally {
-    page.off('request', onRequest);
-    await closeModal(page);
-  }
-}
 
 async function clickQuickviewOnce(page, card, attempt) {
   console.log('Quickview fresh-page attempt:', {
@@ -637,11 +529,14 @@ async function clickQuickviewOnce(page, card, attempt) {
 
   // Каждый раз открываем свежий листинг.
   // Это лечит проблему, когда Julian после 10-12 quickview перестает отдавать AJAX.
-  await page.goto(LISTING_URL, {
-    waitUntil: 'domcontentloaded',
-    timeout: 120000
-  });
+  const pageUrl = card.page_number > 1
+    ? `${LISTING_URL}?page=${card.page_number}`
+    : LISTING_URL;
 
+await page.goto(pageUrl, {
+  waitUntil: 'domcontentloaded',
+  timeout: 120000
+});
   await page.waitForTimeout(7000);
 
   // Скроллим вниз, чтобы карточки точно появились.
@@ -818,7 +713,9 @@ async function run() {
   try {
     await login(page);
 
-    for (let currentPage = 1; currentPage <= MAX_PAGES; currentPage++) {
+    const END_PAGE = START_PAGE + MAX_PAGES - 1;
+
+    for (let currentPage = START_PAGE; currentPage <= END_PAGE; currentPage++) {
       console.log('========================');
       console.log('PAGE:', currentPage);
       console.log('========================');
@@ -830,7 +727,7 @@ async function run() {
         break;
       }
 
-      const cards = await collectListingCards(page);
+      const cards = await collectListingCards(page, currentPage);
 
       for (const card of cards) {
         try {

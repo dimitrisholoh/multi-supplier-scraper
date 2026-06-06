@@ -383,6 +383,14 @@ async function sendWebhook(products) {
 
   console.log('Sending DELTA webhook to n8n...');
 
+  console.log('FINAL DELTA SUMMARY:', {
+    products_count: products.length,
+    unique_product_keys_count: new Set(products.map(p => p.product_key)).size,
+    product_codes_count: products.map(p => p.supplier_product_code).filter(Boolean).length,
+  });
+
+  console.log('FINAL PRODUCT CODES:', products.map(p => p.supplier_product_code));
+  
   const response = await axios.post(
     process.env.N8N_WEBHOOK_URL,
     {

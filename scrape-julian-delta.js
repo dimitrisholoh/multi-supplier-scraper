@@ -184,7 +184,7 @@ async function collectProductsFromListing(page, pageNumber) {
       // Фильтр против ложного размера "m" у ремней
       if (
         supplierSize.toLowerCase() === 'm' &&
-        /\bcm\b/i.test(row.innerText || '')
+        String(row.innerText || '').toLowerCase().includes('cm')
       ) {
         continue;
       }

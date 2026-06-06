@@ -198,7 +198,6 @@ async function collectProductsFromListing(page, pageNumber) {
         });
       }
       }
-    }
 
     for (const v of variantRows) {
       delete v.key;

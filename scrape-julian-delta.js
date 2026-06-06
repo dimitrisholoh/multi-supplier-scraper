@@ -181,6 +181,14 @@ async function collectProductsFromListing(page, pageNumber) {
       const supplierSize = sizeText;
       const stockQty = Number(stockMatch[0]);
 
+      // Фильтр против ложного размера "m" у ремней
+      if (
+        supplierSize.toLowerCase() === 'm' &&
+        /\bcm\b/i.test(row.innerText || '')
+      ) {
+        continue;
+      }
+
       const key = `${supplierSize}|${stockQty}`;
 
       if (!variantRows.some(v => v.key === key)) {
@@ -190,6 +198,7 @@ async function collectProductsFromListing(page, pageNumber) {
           stock_quantity: stockQty,
           raw_text: row.innerText
         });
+      }
       }
     }
 

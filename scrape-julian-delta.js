@@ -147,7 +147,6 @@ async function collectProductsFromListing(page, pageNumber) {
         return (
           normalized.toUpperCase() !== brandLine &&
           /^[A-Z0-9\-]{5,}$/i.test(normalized) &&
-          /\d/.test(normalized) &&
           !normalized.includes('€') &&
           !normalized.includes('%') &&
           !/RETAIL PRICE|FINAL PRICE|SALE|SPRING|SUMMER|FALL|WINTER/i.test(normalized)

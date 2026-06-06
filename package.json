@@ -5,8 +5,7 @@
   "main": "scrape-julian.js",
   "scripts": {
     "start": "node scrape-julian.js",
-    "julian:full": "node scrape-julian.js",
-    "julian:delta": "node scrape-julian-delta.js"
+    "julian:delta": "node scrape-julian-delta.js",
     "julian:full": "node scrape-julian-full.js"
   },
   "dependencies": {

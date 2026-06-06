@@ -394,7 +394,7 @@ async function sendWebhook(products) {
     first_code: productCodes[0],
     last_code: productCodes[productCodes.length - 1],
   }, null, 2));
-  
+
   const response = await axios.post(
     process.env.N8N_WEBHOOK_URL,
     {

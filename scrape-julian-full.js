@@ -1,6 +1,542 @@
 const http = require('http');
+const { chromium } = require('playwright');
+const axios = require('axios');
+const crypto = require('crypto');
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
+
+const SUPPLIER_NAME = 'Julian Fashion Srl';
+const SUPPLIER_SLUG = 'julian-fashion';
+const LISTING_URL = process.env.JULIAN_LISTING_URL || 'https://b2bfashion.online/306-all';
+
+const RAW_PRODUCTS_TABLE = '1_step_supplier_raw_products';
+
+function cleanText(value) {
+  if (value === null || value === undefined) return null;
+  const cleaned = String(value).replace(/\s+/g, ' ').trim();
+  return cleaned || null;
+}
+
+function makeHash(value) {
+  return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function getSupabaseHeaders() {
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+
+  if (!process.env.SUPABASE_URL) throw new Error('SUPABASE_URL is missing');
+  if (!key) throw new Error('SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY is missing');
+
+  return {
+    apikey: key,
+    Authorization: `Bearer ${key}`,
+    'Content-Type': 'application/json',
+    Prefer: 'return=representation'
+  };
+}
+
+async function getRawProduct(rawProductId) {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/${RAW_PRODUCTS_TABLE}?id=eq.${rawProductId}&limit=1`;
+
+  const response = await axios.get(url, {
+    headers: getSupabaseHeaders(),
+    timeout: 30000
+  });
+
+  const product = response.data?.[0];
+
+  if (!product) {
+    throw new Error(`Raw product not found: ${rawProductId}`);
+  }
+
+  return product;
+}
+
+async function updateRawProduct(rawProductId, data) {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/${RAW_PRODUCTS_TABLE}?id=eq.${rawProductId}`;
+
+  const response = await axios.patch(url, data, {
+    headers: getSupabaseHeaders(),
+    timeout: 30000
+  });
+
+  return response.data?.[0] || null;
+}
+
+function getFeature(product, name) {
+  const target = String(name).toLowerCase().trim();
+
+  const direct =
+    product[name] ||
+    product[target] ||
+    product[name.replaceAll(' ', '_')] ||
+    product[target.replaceAll(' ', '_')];
+
+  if (direct) return cleanText(direct);
+
+  const features = product.grouped_features || product.features || product.attributes || {};
+
+  if (Array.isArray(features)) {
+    for (const item of features) {
+      const itemName = String(item?.name || '').toLowerCase().trim();
+
+      if (itemName === target) {
+        return cleanText(item?.value || item?.reference || item?.name);
+      }
+    }
+  }
+
+  if (features && typeof features === 'object') {
+    for (const [key, item] of Object.entries(features)) {
+      const keyNorm = String(key).toLowerCase().trim();
+      const itemName = String(item?.name || item?.group || item?.label || '')
+        .toLowerCase()
+        .trim();
+
+      if (keyNorm === target || itemName === target) {
+        return cleanText(item?.value || item?.reference || item?.name || item);
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractImagesFromHtml(html) {
+  if (!html) return [];
+
+  const urls = [];
+  const decoded = html.replaceAll('\\/', '/');
+
+  const matches = decoded.matchAll(
+    /https:\/\/julianfashionstorage\.blob\.core\.windows\.net\/jbc\/[^"'<> ]+\.(jpg|jpeg|png|webp)/gi
+  );
+
+  for (const match of matches) {
+    const url = cleanText(match[0]);
+    if (url && !urls.includes(url)) urls.push(url);
+  }
+
+  return urls;
+}
+
+function extractFullImages(product, quickviewHtml, existingImages = []) {
+  const images = [];
+
+  const addImage = (url, raw = null) => {
+    const cleanUrl = cleanText(url);
+    if (!cleanUrl) return;
+    if (images.some(img => img.url === cleanUrl)) return;
+
+    images.push({
+      url: cleanUrl,
+      position: images.length + 1,
+      type: images.length === 0 ? 'main' : 'gallery',
+      image_type: images.length === 0 ? 'main' : 'gallery',
+      is_main: images.length === 0,
+      raw
+    });
+  };
+
+  if (Array.isArray(existingImages)) {
+    for (const img of existingImages) {
+      if (typeof img === 'string') addImage(img, img);
+      else addImage(img?.url, img);
+    }
+  }
+
+  extractImagesFromHtml(quickviewHtml).forEach(url => addImage(url));
+
+  if (Array.isArray(product.images)) {
+    product.images.forEach(img => {
+      if (typeof img === 'string') {
+        addImage(img, img);
+      } else {
+        addImage(img?.large?.url, img);
+        addImage(img?.medium?.url, img);
+        addImage(img?.bySize?.large_default?.url, img);
+        addImage(img?.bySize?.home_default?.url, img);
+        addImage(img?.url, img);
+      }
+    });
+  }
+
+  addImage(product.cover?.large?.url, product.cover);
+  addImage(product.cover?.medium?.url, product.cover);
+  addImage(product.cover?.bySize?.large_default?.url, product.cover);
+  addImage(product.cover?.bySize?.home_default?.url, product.cover);
+  addImage(product.cover?.url, product.cover);
+
+  return images;
+}
+
+async function login(page) {
+  console.log('Opening Julian login page...');
+
+  if (!process.env.JULIAN_LOGIN_URL) throw new Error('JULIAN_LOGIN_URL is missing');
+  if (!process.env.JULIAN_EMAIL || !process.env.JULIAN_PASSWORD) {
+    throw new Error('JULIAN_EMAIL or JULIAN_PASSWORD is missing');
+  }
+
+  await page.goto(process.env.JULIAN_LOGIN_URL, {
+    waitUntil: 'domcontentloaded',
+    timeout: 120000
+  });
+
+  await page.waitForTimeout(3000);
+
+  await page.fill('input[type="email"]', process.env.JULIAN_EMAIL);
+  await page.fill('input[type="password"]', process.env.JULIAN_PASSWORD);
+  await page.keyboard.press('Enter');
+
+  await page.waitForTimeout(12000);
+
+  console.log('Login completed');
+  console.log('Current URL:', page.url());
+}
+
+async function openListing(page, pageNumber = 1) {
+  const pageUrl = pageNumber > 1 ? `${LISTING_URL}?page=${pageNumber}` : LISTING_URL;
+
+  console.log('Opening listing URL:', pageUrl);
+
+  await page.goto(pageUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: 120000
+  });
+
+  await page.waitForTimeout(12000);
+
+  for (let i = 0; i < 6; i++) {
+    await page.mouse.wheel(0, 4000);
+    await page.waitForTimeout(700);
+  }
+
+  const count = await page.locator('.product-miniature').count();
+
+  console.log('Products found on page:', count);
+
+  return count;
+}
+
+async function closeModal(page) {
+  const selectors = [
+    '.quickview .close',
+    '.modal .close',
+    'button.close',
+    '[data-dismiss="modal"]',
+    '.modal button[aria-label="Close"]'
+  ];
+
+  for (const selector of selectors) {
+    const btn = page.locator(selector).first();
+
+    if (await btn.count()) {
+      await btn.click({ force: true, timeout: 3000 }).catch(() => {});
+      await page.waitForTimeout(700);
+      return;
+    }
+  }
+
+  await page.keyboard.press('Escape').catch(() => {});
+  await page.waitForTimeout(700);
+}
+
+async function findCardIndexByProductCode(page, supplierProductCode) {
+  const cards = page.locator('.product-miniature');
+  const count = await cards.count();
+
+  for (let i = 0; i < count; i++) {
+    const text = await cards.nth(i).innerText().catch(() => '');
+
+    if (text.includes(supplierProductCode)) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+async function clickQuickviewByCardIndex(page, cardIndex, supplierProductCode) {
+  let capturedUrl = null;
+
+  const onRequest = request => {
+    const url = request.url();
+
+    if (
+      url.includes('controller=product') &&
+      url.includes('action=quickview') &&
+      url.includes('id_product')
+    ) {
+      capturedUrl = url;
+      console.log('CAPTURED QUICKVIEW URL:', url);
+    }
+  };
+
+  page.on('request', onRequest);
+
+  try {
+    const cardLocator = page.locator('.product-miniature').nth(cardIndex);
+
+    await cardLocator.scrollIntoViewIfNeeded().catch(() => {});
+    await page.waitForTimeout(1000);
+
+    await cardLocator.hover({ force: true }).catch(() => {});
+    await page.waitForTimeout(700);
+
+    const button = cardLocator
+      .locator('[data-link-action="quickview"], .quick-view, .button-action.quick-view')
+      .first();
+
+    if (!(await button.count())) {
+      throw new Error(`Quickview button not found for ${supplierProductCode}`);
+    }
+
+    const responsePromise = page.waitForResponse(
+      response => {
+        const url = response.url();
+
+        return (
+          response.status() === 200 &&
+          url.includes('controller=product') &&
+          url.includes('action=quickview') &&
+          url.includes('id_product')
+        );
+      },
+      { timeout: 12000 }
+    ).catch(() => null);
+
+    await button.click({ force: true, timeout: 10000 });
+
+    let json = null;
+    const response = await responsePromise;
+
+    if (response) {
+      console.log('CAPTURED RESPONSE URL:', response.url());
+      json = await response.json();
+    }
+
+    if (!json && capturedUrl) {
+      console.log('Fallback direct request:', capturedUrl);
+
+      const directResponse = await page.request.get(capturedUrl, {
+        timeout: 30000,
+        headers: {
+          'X-Requested-With': 'XMLHttpRequest',
+          Accept: 'application/json, text/javascript, */*; q=0.01'
+        }
+      });
+
+      if (!directResponse.ok()) {
+        throw new Error(`Fallback request failed: ${directResponse.status()}`);
+      }
+
+      json = await directResponse.json();
+    }
+
+    if (!json) throw new Error('No quickview response and no captured URL');
+    if (!json.product) throw new Error('No product in quickview response');
+
+    return {
+      product: json.product,
+      quickview_html: json.quickview_html || ''
+    };
+  } finally {
+    page.off('request', onRequest);
+    await closeModal(page);
+  }
+}
+
+function buildEnrichedPayload(rawProduct, product, quickviewHtml) {
+  const existingRawJson = rawProduct.raw_json || {};
+  const existingImages = rawProduct.images_raw || [];
+
+  const titleRaw = cleanText(product.name || product.title || rawProduct.title_raw);
+  const descriptionRaw = cleanText(product.description || rawProduct.description_raw);
+
+  const colorRaw = getFeature(product, 'color') || rawProduct.color_raw;
+  const compositionRaw = getFeature(product, 'composition') || rawProduct.composition_raw;
+
+  const madeInRaw =
+    getFeature(product, 'made in') ||
+    getFeature(product, 'made_in') ||
+    getFeature(product, 'country') ||
+    getFeature(product, 'origin') ||
+    rawProduct.made_in_raw;
+
+  const categoryRaw =
+    cleanText(getFeature(product, 'category') || product.category_name || product.category) ||
+    rawProduct.category_raw;
+
+  const typeRaw = getFeature(product, 'type') || rawProduct.type_raw;
+  const genderRaw = getFeature(product, 'gender') || rawProduct.gender_raw;
+
+  const sizeAndFitRaw =
+    cleanText(getFeature(product, 'size and fit') || getFeature(product, 'fit')) ||
+    rawProduct.size_and_fit_raw;
+
+  const imagesRaw = extractFullImages(product, quickviewHtml, existingImages);
+
+  const productHash = makeHash({
+    supplier_slug: SUPPLIER_SLUG,
+    supplier_product_code: rawProduct.supplier_product_code,
+    title_raw: titleRaw,
+    description_raw: descriptionRaw,
+    color_raw: colorRaw,
+    composition_raw: compositionRaw,
+    made_in_raw: madeInRaw,
+    images_count: imagesRaw.length
+  });
+
+  return {
+    title_raw: titleRaw,
+    description_raw: descriptionRaw,
+    gender_raw: genderRaw,
+    category_raw: categoryRaw,
+    type_raw: typeRaw,
+    color_raw: colorRaw,
+    composition_raw: compositionRaw,
+    made_in_raw: madeInRaw,
+    size_and_fit_raw: sizeAndFitRaw,
+
+    images_raw: imagesRaw,
+
+    product_hash: productHash,
+
+    raw_json: {
+      ...existingRawJson,
+      full_enrichment: {
+        product,
+        quickview_html: quickviewHtml,
+        enriched_at: new Date().toISOString()
+      }
+    },
+
+    enrichment_needed: false,
+    enrichment_status: 'completed',
+    enrichment_reason: ['julian_full_card_scan_completed'],
+    enriched_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+}
+
+async function enrichJulianProduct(rawProductId) {
+  console.log('==============================');
+  console.log('JULIAN FULL ENRICHMENT START');
+  console.log('raw_product_id:', rawProductId);
+  console.log('==============================');
+
+  const rawProduct = await getRawProduct(rawProductId);
+
+  if (rawProduct.supplier_slug !== SUPPLIER_SLUG) {
+    throw new Error(`Wrong supplier_slug: ${rawProduct.supplier_slug}`);
+  }
+
+  const supplierProductCode = cleanText(rawProduct.supplier_product_code);
+
+  if (!supplierProductCode) {
+    throw new Error('supplier_product_code is missing');
+  }
+
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu'
+    ]
+  });
+
+  const page = await browser.newPage({
+    viewport: {
+      width: 1440,
+      height: 1200
+    }
+  });
+
+  page.setDefaultTimeout(30000);
+
+  try {
+    await login(page);
+
+    const maxPages = Number(process.env.JULIAN_FULL_MAX_PAGES || 3);
+
+    let found = null;
+
+    for (let pageNumber = 1; pageNumber <= maxPages; pageNumber++) {
+      await openListing(page, pageNumber);
+
+      const cardIndex = await findCardIndexByProductCode(page, supplierProductCode);
+
+      if (cardIndex >= 0) {
+        console.log('Product card found:', {
+          supplierProductCode,
+          pageNumber,
+          cardIndex
+        });
+
+        found = {
+          pageNumber,
+          cardIndex
+        };
+
+        break;
+      }
+
+      console.log('Product not found on page:', {
+        supplierProductCode,
+        pageNumber
+      });
+    }
+
+    if (!found) {
+      throw new Error(`Product card not found in listing: ${supplierProductCode}`);
+    }
+
+    const { product, quickview_html } = await clickQuickviewByCardIndex(
+      page,
+      found.cardIndex,
+      supplierProductCode
+    );
+
+    const updatePayload = buildEnrichedPayload(rawProduct, product, quickview_html);
+
+    const updated = await updateRawProduct(rawProductId, updatePayload);
+
+    console.log('JULIAN FULL ENRICHMENT COMPLETED:', {
+      raw_product_id: rawProductId,
+      supplier_product_code: supplierProductCode,
+      title_raw: updatePayload.title_raw,
+      color_raw: updatePayload.color_raw,
+      composition_raw: updatePayload.composition_raw,
+      made_in_raw: updatePayload.made_in_raw,
+      images_count: updatePayload.images_raw.length
+    });
+
+    return {
+      ok: true,
+      raw_product_id: rawProductId,
+      supplier_product_code: supplierProductCode,
+      updated
+    };
+  } catch (error) {
+    console.error('JULIAN FULL ENRICHMENT ERROR:', error.message);
+
+    await updateRawProduct(rawProductId, {
+      enrichment_status: 'error',
+      enrichment_needed: true,
+      enrichment_reason: [error.message],
+      updated_at: new Date().toISOString()
+    }).catch(updateError => {
+      console.error('Failed to mark enrichment error:', updateError.message);
+    });
+
+    throw error;
+  } finally {
+    await browser.close();
+  }
+}
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -33,28 +569,22 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/enrich') {
       const payload = await readJsonBody(req);
 
-      console.log('JULIAN FULL ENRICHMENT REQUEST:', {
-        raw_product_id: payload.id || payload.raw_product_id,
-        supplier_product_code: payload.supplier_product_code,
-        supplier_slug: payload.supplier_slug,
-        supplier_product_url: payload.supplier_product_url
-      });
+      const rawProductId = payload.raw_product_id || payload.id;
+
+      if (!rawProductId) {
+        throw new Error('raw_product_id is missing');
+      }
+
+      const result = await enrichJulianProduct(rawProductId);
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({
-        ok: true,
-        message: 'Julian full enrichment request received',
-        received: {
-          raw_product_id: payload.id || payload.raw_product_id,
-          supplier_product_code: payload.supplier_product_code
-        }
-      }));
+      return res.end(JSON.stringify(result));
     }
 
     res.writeHead(404, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ ok: false, error: 'Not found' }));
   } catch (error) {
-    console.error('Worker error:', error.message);
+    console.error('Worker request error:', error.message);
 
     res.writeHead(500, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({

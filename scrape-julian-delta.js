@@ -371,7 +371,7 @@ async function collectProductsFromListing(page, pageNumber) {
    //   variants: product.variants_raw.length,
    //   images: product.images_raw.length
    // });
- // }
+  }
 
   return products;
 }

@@ -7,7 +7,7 @@ const SUPPLIER_SLUG = 'julian-fashion';
 
 const LIMIT_PRODUCTS = Number(process.env.LIMIT_PRODUCTS || 60);
 const START_PAGE = Number(process.env.START_PAGE || 1);
-const MAX_PAGES = Number(process.env.MAX_PAGES || 3);
+const MAX_PAGES = Number(process.env.MAX_PAGES || 1);
 
 const LISTING_URL = process.env.JULIAN_LISTING_URL || 'https://b2bfashion.online/306-all';
 

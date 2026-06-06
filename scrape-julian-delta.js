@@ -154,25 +154,65 @@ async function collectProductsFromListing(page, pageNumber) {
         );
       });
 
-      const variantRows = [];
+     const variantRows = [];
 
-      const rowCandidates = Array.from(el.querySelectorAll('tr, .row, li, div'));
+    const sizeRegex = /^(?:[A-Z]{0,3}\s?)?(?:\d{1,3}(?:[.,]\d)?(?:\s?(?:IT|EU|FR))?|XS|S|M|L|XL|XXL|XXXL|U|OS|UNI|ONE SIZE)$/i;
 
-      for (const row of rowCandidates) {
-        const rowText = (row.innerText || '').replace(/\s+/g, ' ').trim();
+    const stockRegex = /(\d+)\s*pc\.?/i;
 
-        const match = rowText.match(
-          /^([A-Z]*\s?\d+(?:\.\d+)?(?:\s?IT|\s?EU|\s?FR)?|XS|S|M|L|XL|XXL|XXXL|U|OS|UNI|ONE SIZE)\s+(\d+)\s*pc\.?/i
+    const rowCandidates = Array.from(el.querySelectorAll('tr, .product-variants-item, .product-variant, .attribute, .row, li, div'));
+
+    for (const row of rowCandidates) {
+      const rowText = (row.innerText || '').replace(/\s+/g, ' ').trim();
+      if (!rowText) continue;
+
+      const parts = rowText
+        .split(/\n|\t| {2,}/)
+        .map(x => x.replace(/\s+/g, ' ').trim())
+        .filter(Boolean);
+
+      let supplierSize = null;
+      let stockQty = null;
+
+      for (const part of parts) {
+        if (!supplierSize && sizeRegex.test(part)) {
+          supplierSize = part;
+        }
+
+        const stockMatch = part.match(stockRegex);
+        if (stockMatch) {
+          stockQty = Number(stockMatch[1]);
+        }
+      }
+
+      if (!supplierSize) {
+        const directMatch = rowText.match(
+          /((?:\d{1,3}(?:[.,]\d)?(?:\s?(?:IT|EU|FR))?)|XS|S|M|L|XL|XXL|XXXL|U|OS|UNI|ONE SIZE)\s+(\d+)\s*pc\.?/i
         );
 
-        if (match) {
+        if (directMatch) {
+          supplierSize = directMatch[1].trim();
+          stockQty = Number(directMatch[2]);
+        }
+      }
+
+      if (supplierSize && stockQty !== null) {
+        const key = `${supplierSize}|${stockQty}`;
+
+        if (!variantRows.some(v => v.key === key)) {
           variantRows.push({
-            supplier_size: match[1].trim(),
-            stock_quantity: Number(match[2]),
+            key,
+            supplier_size: supplierSize.replace(',', '.').trim(),
+            stock_quantity: stockQty,
             raw_text: rowText
           });
         }
       }
+    }
+
+    for (const v of variantRows) {
+      delete v.key;
+    }
 
       return {
         lines,

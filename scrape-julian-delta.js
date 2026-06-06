@@ -181,11 +181,9 @@ async function collectProductsFromListing(page, pageNumber) {
       const supplierSize = sizeText;
       const stockQty = Number(stockMatch[0]);
 
-      // Фильтр против ложного размера "m" у ремней
-      if (
-        supplierSize.toLowerCase() === 'm' &&
-        String(row.innerText || '').toLowerCase().includes('cm')
-      ) {
+      const rowTextLower = String(row.innerText || '').toLowerCase();
+
+      if (supplierSize.toLowerCase() === 'm' && rowTextLower.includes('cm')) {
         continue;
       }
 

@@ -360,18 +360,18 @@ async function collectProductsFromListing(page, pageNumber) {
 
     products.push(product);
 
-    console.log('DELTA PRODUCT OK:', {
-      page: pageNumber,
-      index: i + 1,
-      brand: product.brand_raw,
-      code: product.supplier_product_code,
-      retail: product.supplier_retail_price,
-      final: product.supplier_final_price,
-      discount: product.supplier_discount_percent,
-      variants: product.variants_raw.length,
-      images: product.images_raw.length
-    });
-  }
+   // console.log('DELTA PRODUCT OK:', {
+   //   page: pageNumber,
+   //   index: i + 1,
+   //   brand: product.brand_raw,
+   //   code: product.supplier_product_code,
+   //   retail: product.supplier_retail_price,
+   //   final: product.supplier_final_price,
+   //   discount: product.supplier_discount_percent,
+   //   variants: product.variants_raw.length,
+   //   images: product.images_raw.length
+   // });
+ // }
 
   return products;
 }
@@ -383,13 +383,17 @@ async function sendWebhook(products) {
 
   console.log('Sending DELTA webhook to n8n...');
 
-  console.log('FINAL DELTA SUMMARY:', {
-    products_count: products.length,
-    unique_product_keys_count: new Set(products.map(p => p.product_key)).size,
-    product_codes_count: products.map(p => p.supplier_product_code).filter(Boolean).length,
-  });
+  const productCodes = products.map(p => p.supplier_product_code);
+  const productKeys = products.map(p => p.product_key);
 
-  console.log('FINAL PRODUCT CODES:', products.map(p => p.supplier_product_code));
+  console.log('FINAL DELTA SUMMARY:', JSON.stringify({
+    products_count: products.length,
+    product_codes_count: productCodes.filter(Boolean).length,
+    unique_product_codes_count: new Set(productCodes).size,
+    unique_product_keys_count: new Set(productKeys).size,
+    first_code: productCodes[0],
+    last_code: productCodes[productCodes.length - 1],
+  }, null, 2));
   
   const response = await axios.post(
     process.env.N8N_WEBHOOK_URL,

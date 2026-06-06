@@ -156,64 +156,47 @@ async function collectProductsFromListing(page, pageNumber) {
 
      const variantRows = [];
 
-    const sizeRegex = /^(?:[A-Z]{0,3}\s?)?(?:\d{1,3}(?:[.,]\d)?(?:\s?(?:IT|EU|FR))?|XS|S|M|L|XL|XXL|XXXL|U|OS|UNI|ONE SIZE)$/i;
+    const rows = Array.from(el.querySelectorAll('.rowSingle'));
 
-    const stockRegex = /(\d+)\s*pc\.?/i;
+    for (const row of rows) {
+      const sizeEl =
+        row.querySelector('[data-title="size"]') ||
+        row.querySelector('.ectable_variants');
 
-    const rowCandidates = Array.from(el.querySelectorAll('tr, .product-variants-item, .product-variant, .attribute, .row, li, div'));
+      const stockEl =
+        row.querySelector('[data-title="in stock"]') ||
+        row.children?.[1];
 
-    for (const row of rowCandidates) {
-      const rowText = (row.innerText || '').replace(/\s+/g, ' ').trim();
-      if (!rowText) continue;
+      const sizeText = (sizeEl?.innerText || '')
+        .replace(/\s+/g, ' ')
+        .trim();
 
-      const parts = rowText
-        .split(/\n|\t| {2,}/)
-        .map(x => x.replace(/\s+/g, ' ').trim())
-        .filter(Boolean);
+      const stockText = (stockEl?.innerText || '')
+        .replace(/\s+/g, ' ')
+        .trim();
 
-      let supplierSize = null;
-      let stockQty = null;
+      const stockMatch = stockText.match(/\d+/);
 
-      for (const part of parts) {
-        if (!supplierSize && sizeRegex.test(part)) {
-          supplierSize = part;
-        }
+      if (!sizeText || !stockMatch) continue;
 
-        const stockMatch = part.match(stockRegex);
-        if (stockMatch) {
-          stockQty = Number(stockMatch[1]);
-        }
-      }
+      const supplierSize = sizeText;
+      const stockQty = Number(stockMatch[0]);
 
-      if (!supplierSize) {
-        const directMatch = rowText.match(
-          /((?:\d{1,3}(?:[.,]\d)?(?:\s?(?:IT|EU|FR))?)|XS|S|M|L|XL|XXL|XXXL|U|OS|UNI|ONE SIZE)\s+(\d+)\s*pc\.?/i
-        );
+      const key = `${supplierSize}|${stockQty}`;
 
-        if (directMatch) {
-          supplierSize = directMatch[1].trim();
-          stockQty = Number(directMatch[2]);
-        }
-      }
-
-      if (supplierSize && stockQty !== null) {
-        const key = `${supplierSize}|${stockQty}`;
-
-        if (!variantRows.some(v => v.key === key)) {
-          variantRows.push({
-            key,
-            supplier_size: supplierSize.replace(',', '.').trim(),
-            stock_quantity: stockQty,
-            raw_text: rowText
-          });
-        }
+      if (!variantRows.some(v => v.key === key)) {
+        variantRows.push({
+          key,
+          supplier_size: supplierSize,
+          stock_quantity: stockQty,
+          raw_text: row.innerText
+        });
       }
     }
 
     for (const v of variantRows) {
       delete v.key;
     }
-
       return {
         lines,
         html,

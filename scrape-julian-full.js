@@ -521,7 +521,13 @@ async function enrichJulianProduct(rawProductId) {
       updated
     };
   } catch (error) {
+    
     console.error('JULIAN FULL ENRICHMENT ERROR:', error.message);
+
+    if (error.response) {
+      console.error('ERROR STATUS:', error.response.status);
+      console.error('ERROR DATA:', JSON.stringify(error.response.data, null, 2));
+    }
 
     await updateRawProduct(rawProductId, {
       enrichment_status: 'error',
@@ -530,6 +536,11 @@ async function enrichJulianProduct(rawProductId) {
       updated_at: new Date().toISOString()
     }).catch(updateError => {
       console.error('Failed to mark enrichment error:', updateError.message);
+
+      if (updateError.response) {
+        console.error('MARK ERROR STATUS:', updateError.response.status);
+        console.error('MARK ERROR DATA:', JSON.stringify(updateError.response.data, null, 2));
+      }
     });
 
     throw error;

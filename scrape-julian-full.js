@@ -376,6 +376,11 @@ function buildEnrichedPayload(rawProduct, product, quickviewHtml) {
     rawProduct.size_and_fit_raw;
 
   const imagesRaw = extractFullImages(product, quickviewHtml, existingImages);
+  const supplierProductUrl =
+    cleanText(product.link) ||
+    cleanText(product.url) ||
+    cleanText(rawProduct.supplier_product_url) ||
+    null;
 
   const productHash = makeHash({
     supplier_slug: SUPPLIER_SLUG,
@@ -398,6 +403,7 @@ function buildEnrichedPayload(rawProduct, product, quickviewHtml) {
     composition_raw: compositionRaw,
     made_in_raw: madeInRaw,
     size_and_fit_raw: sizeAndFitRaw,
+    supplier_product_url: supplierProductUrl,
 
     images_raw: imagesRaw,
 
@@ -507,6 +513,7 @@ async function enrichJulianProduct(rawProductId) {
     console.log('JULIAN FULL ENRICHMENT COMPLETED:', {
       raw_product_id: rawProductId,
       supplier_product_code: supplierProductCode,
+      supplier_product_url: updatePayload.supplier_product_url,
       title_raw: updatePayload.title_raw,
       color_raw: updatePayload.color_raw,
       composition_raw: updatePayload.composition_raw,

@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const SUPPLIER_NAME = 'Julian Fashion Srl';
 const SUPPLIER_SLUG = 'julian-fashion';
 
-const LIMIT_PRODUCTS = Number(process.env.LIMIT_PRODUCTS || 60);
+const LIMIT_PRODUCTS = Number(process.env.LIMIT_PRODUCTS || 5);
 const START_PAGE = Number(process.env.START_PAGE || 1);
 const MAX_PAGES = Number(process.env.MAX_PAGES || 1);
 
@@ -34,7 +34,7 @@ function toNumber(value) {
     s = s.replace(',', '.');
   }
 
-  const n = Number(s);
+   n = Number(s);
   return Number.isFinite(n) ? n : null;
 }
 
@@ -72,7 +72,7 @@ async function login(page) {
 }
 
 async function openListing(page, pageNumber) {
-  const pageUrl = buildPageUrl(pageNumber);
+   pageUrl = buildPageUrl(pageNumber);
 
   console.log('========================');
   console.log('DELTA PAGE:', pageNumber);
@@ -91,7 +91,7 @@ async function openListing(page, pageNumber) {
     await page.waitForTimeout(700);
   }
 
-  const count = await page.locator('.product-miniature').count();
+   count = await page.locator('.product-miniature').count();
 
   console.log('Listing opened');
   console.log('Current listing URL:', page.url());
@@ -230,9 +230,14 @@ async function collectProductsFromListing(page, pageNumber) {
     const finalPrice = toNumber(data.money_matches[data.money_matches.length - 1]);
     const discountPercent = toNumber(data.discount_percent);
 
+    const seasonRaw = cleanText(data.season);
+
+    const isSale =
+      String(seasonRaw || '').trim().toLowerCase() === 'sale';
+
     const productKey = `${SUPPLIER_SLUG}:${productCode}`;
     const scannedAt = new Date().toISOString();
-
+    
     const variantsRaw = data.variant_rows.length
       ? data.variant_rows.map(v => ({
           supplier_size: cleanText(v.supplier_size),
@@ -304,7 +309,7 @@ async function collectProductsFromListing(page, pageNumber) {
       subcategory_raw: null,
       type_raw: null,
       color_raw: null,
-      season_raw: cleanText(data.season),
+      season_raw: seasonRaw,
 
       composition_raw: null,
       made_in_raw: null,
@@ -315,7 +320,7 @@ async function collectProductsFromListing(page, pageNumber) {
       supplier_discount_percent: discountPercent,
 
       currency: 'EUR',
-      is_sale: Boolean(discountPercent),
+      is_sale: isSale,
 
       supplier_product_url: null,
       listing_url: buildPageUrl(pageNumber),

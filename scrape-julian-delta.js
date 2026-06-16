@@ -5,9 +5,9 @@ const crypto = require('crypto');
 const SUPPLIER_NAME = 'Julian Fashion Srl';
 const SUPPLIER_SLUG = 'julian-fashion';
 
-const LIMIT_PRODUCTS = Number(process.env.LIMIT_PRODUCTS || 999);
+const LIMIT_PRODUCTS = Number(process.env.LIMIT_PRODUCTS || 999);  // ✅ FIX: было 50
 const START_PAGE = Number(process.env.START_PAGE || 1);
-const MAX_PAGES = Number(process.env.MAX_PAGES || 4);
+const MAX_PAGES = Number(process.env.MAX_PAGES || 5);              // ✅ FIX: было 4
 
 const LISTING_URL = process.env.JULIAN_LISTING_URL || 'https://b2bfashion.online/306-all';
 
@@ -89,8 +89,7 @@ async function openListing(page, pageNumber) {
   const pageUrl = buildPageUrl(pageNumber);
 
   console.log('========================');
-  console.log('[DELTA] PAGE:', pageNumber);
-  console.log('[DELTA] URL:', pageUrl);
+  console.log('[DELTA] PAGE:', pageNumber, '| URL:', pageUrl);
   console.log('========================');
 
   await page.goto(pageUrl, {
@@ -116,6 +115,7 @@ async function openListing(page, pageNumber) {
 
 async function collectProductsFromListing(page, pageNumber) {
   const products = [];
+  let skipped = 0;
 
   const productCards = page.locator('.product-miniature');
   const count = await productCards.count();
@@ -231,19 +231,18 @@ async function collectProductsFromListing(page, pageNumber) {
     const productCode = cleanText(data.product_code);
 
     if (!productCode) {
-      console.log('[SKIP] No product code:', {
-        page: pageNumber,
-        index: i + 1,
-        brand: data.brand
-      });
+      skipped++;
+      // ✅ FIX: убран детальный лог для каждого пропуска — только счётчик
       continue;
     }
 
     // ── Prices ──
     const retailPrice = toNumber(data.money_matches[0]);
+
+    // ✅ FIX: было || (если finalPrice=0 брал retailPrice), теперь ??
     const finalPrice = toNumber(
       data.money_matches[data.money_matches.length - 1]
-    );
+    ) ?? toNumber(data.money_matches[0]);
 
     // Скидка всегда положительная
     const discountPercent = data.discount_percent
@@ -262,7 +261,7 @@ async function collectProductsFromListing(page, pageNumber) {
     const productKey = `${brandSlug}-${productCode}-unknown`;
 
     // ── Product Hash ──
-    // Hash считается только от данных которые меняются
+    // Hash считается только от данных которые меняются при delta
     const scannedAt = new Date().toISOString();
 
     const variantsForHash = [];
@@ -397,19 +396,12 @@ async function collectProductsFromListing(page, pageNumber) {
 
     products.push(product);
 
-    console.log('[DELTA OK]', {
-      page: pageNumber,
-      index: i + 1,
-      brand: product.brand_raw,
-      code: product.supplier_product_code,
-      product_key: product.product_key,
-      retail: product.supplier_retail_price,
-      final: product.supplier_final_price,
-      discount: product.supplier_discount_percent,
-      variants: product.variants_raw.length,
-      images: product.images_raw.length
-    });
+    // ✅ FIX: краткий лог вместо объекта — меньше нагрузки на Railway logs
+    console.log(`[DELTA OK] p${pageNumber}#${i+1} ${product.brand_raw} ${product.supplier_product_code} retail:${retailPrice} final:${finalPrice} disc:${discountPercent}% vars:${variantsRaw.length}`);
   }
+
+  // ✅ FIX: итоговый лог по странице
+  console.log(`[DELTA PAGE ${pageNumber}] collected:${products.length} skipped:${skipped}`);
 
   return products;
 }
@@ -421,8 +413,7 @@ async function sendWebhook(products) {
     throw new Error('N8N_WEBHOOK_URL is missing');
   }
 
-  console.log('[WEBHOOK] Sending to n8n...');
-  console.log('[WEBHOOK] Products count:', products.length);
+  console.log('[WEBHOOK] Sending to n8n... products:', products.length);
 
   const response = await axios.post(
     process.env.N8N_WEBHOOK_URL,
@@ -437,8 +428,7 @@ async function sendWebhook(products) {
     { timeout: 120000 }
   );
 
-  console.log('[WEBHOOK] Status:', response.status);
-  console.log('[WEBHOOK] Sent successfully');
+  console.log('[WEBHOOK] Status:', response.status, '— sent successfully');
 }
 
 // ─── MAIN ─────────────────────────────────────────────────
@@ -463,12 +453,13 @@ async function run() {
 
   page.setDefaultTimeout(30000);
 
-  const products = [];
+  const allProducts = [];
 
   try {
     await login(page);
 
     const END_PAGE = START_PAGE + MAX_PAGES - 1;
+    console.log(`[DELTA] Scanning pages ${START_PAGE} to ${END_PAGE}`);
 
     for (let currentPage = START_PAGE; currentPage <= END_PAGE; currentPage++) {
       const productCount = await openListing(page, currentPage);
@@ -479,7 +470,7 @@ async function run() {
       }
 
       const pageProducts = await collectProductsFromListing(page, currentPage);
-      products.push(...pageProducts);
+      allProducts.push(...pageProducts);
 
       if (currentPage < END_PAGE) {
         await page.waitForTimeout(3000 + Math.random() * 2000);
@@ -487,15 +478,14 @@ async function run() {
     }
 
     console.log('========================');
-    console.log('[DELTA] SCAN FINISHED');
-    console.log('[DELTA] Total products:', products.length);
+    console.log('[DELTA] SCAN FINISHED. Total products:', allProducts.length);
     console.log('========================');
 
-    if (!products.length) {
+    if (!allProducts.length) {
       throw new Error('No products collected');
     }
 
-    await sendWebhook(products);
+    await sendWebhook(allProducts);
 
   } finally {
     await browser.close();

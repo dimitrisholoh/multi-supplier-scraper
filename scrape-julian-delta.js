@@ -133,16 +133,18 @@ async function collectProductsFromListing(page, pageNumber) {
         .map(x => x.replace(/\s+/g, ' ').trim())
         .filter(Boolean);
 
-      const productUrl =
-        el.querySelector('a.product-name')?.href ||
-        el.querySelector('a.product_img_link')?.href ||
-        el.querySelector('.product-title a')?.href ||
-        el.querySelector('h2 a')?.href ||
-        el.querySelector('h3 a')?.href ||
-        el.querySelector('a[href*="/306-"]')?.href ||
-        el.querySelector('a[href*="b2bfashion"]')?.href ||
-        el.querySelector('a')?.href ||
-        null;
+      const productUrl = (() => {
+        const links = Array.from(el.querySelectorAll('a[href]'));
+        const valid = links
+          .map(a => a.href)
+          .filter(href =>
+            href &&
+            href.startsWith('http') &&
+            !href.includes('javascript:') &&
+            (href.includes('/306-') || href.includes('b2bfashion'))
+          );
+        return valid[0] || null;
+      })();
 
       const imageUrls = Array.from(el.querySelectorAll('img'))
         .map(img =>

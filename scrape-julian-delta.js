@@ -7,7 +7,8 @@ const SUPPLIER_SLUG = 'julian-fashion';
 
 const LIMIT_PRODUCTS = Number(process.env.LIMIT_PRODUCTS || 999);
 const START_PAGE = Number(process.env.START_PAGE || 1);
-const MAX_PAGES = Number(process.env.MAX_PAGES || 20);
+const MAX_PAGES = Number(process.env.MAX_PAGES || 5);
+const BATCH_SIZE = Number(process.env.BATCH_SIZE || 50);
 
 const LISTING_URL = process.env.JULIAN_LISTING_URL || 'https://b2bfashion.online/306-all';
 
@@ -132,7 +133,6 @@ async function collectProductsFromListing(page, pageNumber) {
         .map(x => x.replace(/\s+/g, ' ').trim())
         .filter(Boolean);
 
-      // ── Product URL ──
       const productUrl =
         el.querySelector('a.product-name')?.href ||
         el.querySelector('a.product_img_link')?.href ||
@@ -144,7 +144,6 @@ async function collectProductsFromListing(page, pageNumber) {
         el.querySelector('a')?.href ||
         null;
 
-      // ── Images ──
       const imageUrls = Array.from(el.querySelectorAll('img'))
         .map(img =>
           img.getAttribute('data-full-size-image-url') ||
@@ -237,7 +236,6 @@ async function collectProductsFromListing(page, pageNumber) {
       };
     });
 
-    // ── Validate product code ──
     const productCode = cleanText(data.product_code);
 
     if (!productCode) {
@@ -245,7 +243,6 @@ async function collectProductsFromListing(page, pageNumber) {
       continue;
     }
 
-    // ── Prices ──
     const retailPrice = toNumber(data.money_matches[0]);
     const finalPrice = toNumber(
       data.money_matches[data.money_matches.length - 1]
@@ -255,19 +252,15 @@ async function collectProductsFromListing(page, pageNumber) {
       ? Math.abs(toNumber(data.discount_percent))
       : null;
 
-    // ── Season / Sale ──
     const seasonRaw = cleanText(data.season);
     const isSale = String(seasonRaw || '').trim().toLowerCase() === 'sale';
 
-    // ── Product Key ──
     const brandSlug = buildSlug(data.brand);
     const productKey = `${brandSlug}-${productCode}-unknown`;
 
-    // ── Product Hash ──
     const scannedAt = new Date().toISOString();
     const variantsForHash = [];
 
-    // ── Variants ──
     const variantsRaw = data.variant_rows.length
       ? data.variant_rows.map(v => {
           const size = cleanText(v.supplier_size);
@@ -319,7 +312,6 @@ async function collectProductsFromListing(page, pageNumber) {
       is_active: true
     });
 
-    // ── Images ──
     const imagesRaw = data.image_urls
       .filter(url => url && url.startsWith('http'))
       .map((url, index) => ({
@@ -333,7 +325,6 @@ async function collectProductsFromListing(page, pageNumber) {
         is_main: index === 0
       }));
 
-    // ── Build Product ──
     const product = {
       supplier_name: SUPPLIER_NAME,
       supplier_slug: SUPPLIER_SLUG,
@@ -398,12 +389,12 @@ async function collectProductsFromListing(page, pageNumber) {
 
 // ─── SEND WEBHOOK ─────────────────────────────────────────
 
-async function sendWebhook(products) {
+async function sendWebhook(products, batchIndex) {
   if (!process.env.N8N_WEBHOOK_URL) {
     throw new Error('N8N_WEBHOOK_URL is missing');
   }
 
-  console.log('[WEBHOOK] Sending to n8n... products:', products.length);
+  console.log(`[WEBHOOK] Sending batch ${batchIndex + 1}... products: ${products.length}`);
 
   const response = await axios.post(
     process.env.N8N_WEBHOOK_URL,
@@ -418,7 +409,26 @@ async function sendWebhook(products) {
     { timeout: 120000 }
   );
 
-  console.log('[WEBHOOK] Status:', response.status, '— sent successfully');
+  console.log(`[WEBHOOK] Batch ${batchIndex + 1} status: ${response.status} — sent successfully`);
+}
+
+async function sendInBatches(allProducts) {
+  const total = allProducts.length;
+  const batches = Math.ceil(total / BATCH_SIZE);
+
+  console.log(`[WEBHOOK] Sending ${total} products in ${batches} batches of ${BATCH_SIZE}`);
+
+  for (let i = 0; i < batches; i++) {
+    const batch = allProducts.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE);
+    await sendWebhook(batch, i);
+
+    if (i < batches - 1) {
+      console.log(`[WEBHOOK] Waiting 5s before next batch...`);
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
+  }
+
+  console.log(`[WEBHOOK] All ${batches} batches sent successfully`);
 }
 
 // ─── MAIN ─────────────────────────────────────────────────
@@ -475,7 +485,7 @@ async function run() {
       throw new Error('No products collected');
     }
 
-    await sendWebhook(allProducts);
+    await sendInBatches(allProducts);
 
   } finally {
     await browser.close();

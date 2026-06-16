@@ -11,6 +11,17 @@ const LISTING_URL = process.env.JULIAN_LISTING_URL || 'https://b2bfashion.online
 
 const RAW_PRODUCTS_TABLE = '1_step_supplier_raw_products';
 
+// ✅ FIX 1: buildSlug функция
+function buildSlug(value) {
+  if (!value) return 'unknown';
+  return String(value)
+    .toLowerCase()
+    .trim()
+    .replace(/['\u2019\u2018]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '') || 'unknown';
+}
+
 function cleanText(value) {
   if (value === null || value === undefined) return null;
   const cleaned = String(value).replace(/\s+/g, ' ').trim();
@@ -79,7 +90,6 @@ function getFeature(product, name) {
   if (Array.isArray(features)) {
     for (const item of features) {
       const itemName = String(item?.name || '').toLowerCase().trim();
-
       if (itemName === target) {
         return cleanText(item?.value || item?.reference || item?.name);
       }
@@ -188,15 +198,12 @@ async function login(page) {
   });
 
   await page.waitForTimeout(3000);
-
   await page.fill('input[type="email"]', process.env.JULIAN_EMAIL);
   await page.fill('input[type="password"]', process.env.JULIAN_PASSWORD);
   await page.keyboard.press('Enter');
-
   await page.waitForTimeout(12000);
 
-  console.log('Login completed');
-  console.log('Current URL:', page.url());
+  console.log('Login completed. URL:', page.url());
 }
 
 async function openListing(page, pageNumber = 1) {
@@ -217,9 +224,7 @@ async function openListing(page, pageNumber = 1) {
   }
 
   const count = await page.locator('.product-miniature').count();
-
   console.log('Products found on page:', count);
-
   return count;
 }
 
@@ -234,7 +239,6 @@ async function closeModal(page) {
 
   for (const selector of selectors) {
     const btn = page.locator(selector).first();
-
     if (await btn.count()) {
       await btn.click({ force: true, timeout: 3000 }).catch(() => {});
       await page.waitForTimeout(700);
@@ -252,7 +256,6 @@ async function findCardIndexByProductCode(page, supplierProductCode) {
 
   for (let i = 0; i < count; i++) {
     const text = await cards.nth(i).innerText().catch(() => '');
-
     if (text.includes(supplierProductCode)) {
       return i;
     }
@@ -266,7 +269,6 @@ async function clickQuickviewByCardIndex(page, cardIndex, supplierProductCode) {
 
   const onRequest = request => {
     const url = request.url();
-
     if (
       url.includes('controller=product') &&
       url.includes('action=quickview') &&
@@ -284,7 +286,6 @@ async function clickQuickviewByCardIndex(page, cardIndex, supplierProductCode) {
 
     await cardLocator.scrollIntoViewIfNeeded().catch(() => {});
     await page.waitForTimeout(1000);
-
     await cardLocator.hover({ force: true }).catch(() => {});
     await page.waitForTimeout(700);
 
@@ -299,7 +300,6 @@ async function clickQuickviewByCardIndex(page, cardIndex, supplierProductCode) {
     const responsePromise = page.waitForResponse(
       response => {
         const url = response.url();
-
         return (
           response.status() === 200 &&
           url.includes('controller=product') &&
@@ -380,6 +380,7 @@ function buildEnrichedPayload(rawProduct, product, quickviewHtml) {
     rawProduct.size_and_fit_raw;
 
   const imagesRaw = extractFullImages(product, quickviewHtml, existingImages);
+
   const supplierProductUrl =
     cleanText(product.link) ||
     cleanText(product.url) ||
@@ -397,6 +398,10 @@ function buildEnrichedPayload(rawProduct, product, quickviewHtml) {
     images_count: imagesRaw.length
   });
 
+  // ✅ FIX 2: product_key строится после enrichment
+  const colorSlug = buildSlug(colorRaw || 'unknown');
+  const productKey = `${buildSlug(rawProduct.brand_raw)}-${rawProduct.supplier_product_code}-${colorSlug}`;
+
   return {
     title_raw: titleRaw,
     description_raw: descriptionRaw,
@@ -408,11 +413,9 @@ function buildEnrichedPayload(rawProduct, product, quickviewHtml) {
     made_in_raw: madeInRaw,
     size_and_fit_raw: sizeAndFitRaw,
     supplier_product_url: supplierProductUrl,
-
+    product_key: productKey,
     images_raw: imagesRaw,
-
     product_hash: productHash,
-
     raw_json: {
       ...existingRawJson,
       full_enrichment: {
@@ -421,7 +424,6 @@ function buildEnrichedPayload(rawProduct, product, quickviewHtml) {
         enriched_at: new Date().toISOString()
       }
     },
-
     enrichment_needed: false,
     enrichment_status: 'completed',
     enrichment_reason: ['julian_full_card_scan_completed'],
@@ -459,10 +461,7 @@ async function enrichJulianProduct(rawProductId) {
   });
 
   const page = await browser.newPage({
-    viewport: {
-      width: 1440,
-      height: 1200
-    }
+    viewport: { width: 1440, height: 1200 }
   });
 
   page.setDefaultTimeout(30000);
@@ -470,7 +469,22 @@ async function enrichJulianProduct(rawProductId) {
   try {
     await login(page);
 
-    const maxPages = Number(process.env.JULIAN_FULL_MAX_PAGES || 3);
+    // ✅ FIX 3: maxPages 3 → 10
+    const maxPages = Number(process.env.JULIAN_FULL_MAX_PAGES || 10);
+
+    // ✅ FIX 4: если supplier_product_url уже есть — используем его напрямую
+    if (rawProduct.supplier_product_url &&
+        rawProduct.supplier_product_url.startsWith('http') &&
+        !rawProduct.supplier_product_url.includes('javascript:')) {
+      console.log('Using existing product URL:', rawProduct.supplier_product_url);
+
+      await page.goto(rawProduct.supplier_product_url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 120000
+      });
+
+      await page.waitForTimeout(5000);
+    }
 
     let found = null;
 
@@ -480,24 +494,12 @@ async function enrichJulianProduct(rawProductId) {
       const cardIndex = await findCardIndexByProductCode(page, supplierProductCode);
 
       if (cardIndex >= 0) {
-        console.log('Product card found:', {
-          supplierProductCode,
-          pageNumber,
-          cardIndex
-        });
-
-        found = {
-          pageNumber,
-          cardIndex
-        };
-
+        console.log('Product card found:', { supplierProductCode, pageNumber, cardIndex });
+        found = { pageNumber, cardIndex };
         break;
       }
 
-      console.log('Product not found on page:', {
-        supplierProductCode,
-        pageNumber
-      });
+      console.log('Product not found on page:', { supplierProductCode, pageNumber });
     }
 
     if (!found) {
@@ -511,17 +513,15 @@ async function enrichJulianProduct(rawProductId) {
     );
 
     const updatePayload = buildEnrichedPayload(rawProduct, product, quickview_html);
-
     const updated = await updateRawProduct(rawProductId, updatePayload);
 
     console.log('JULIAN FULL ENRICHMENT COMPLETED:', {
       raw_product_id: rawProductId,
       supplier_product_code: supplierProductCode,
+      product_key: updatePayload.product_key,
       supplier_product_url: updatePayload.supplier_product_url,
       title_raw: updatePayload.title_raw,
       color_raw: updatePayload.color_raw,
-      composition_raw: updatePayload.composition_raw,
-      made_in_raw: updatePayload.made_in_raw,
       images_count: updatePayload.images_raw.length
     });
 
@@ -532,7 +532,6 @@ async function enrichJulianProduct(rawProductId) {
       updated
     };
   } catch (error) {
-    
     console.error('JULIAN FULL ENRICHMENT ERROR:', error.message);
 
     if (error.response) {
@@ -547,11 +546,6 @@ async function enrichJulianProduct(rawProductId) {
       updated_at: new Date().toISOString()
     }).catch(updateError => {
       console.error('Failed to mark enrichment error:', updateError.message);
-
-      if (updateError.response) {
-        console.error('MARK ERROR STATUS:', updateError.response.status);
-        console.error('MARK ERROR DATA:', JSON.stringify(updateError.response.data, null, 2));
-      }
     });
 
     throw error;
@@ -563,11 +557,7 @@ async function enrichJulianProduct(rawProductId) {
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
-
-    req.on('data', chunk => {
-      body += chunk.toString();
-    });
-
+    req.on('data', chunk => { body += chunk.toString(); });
     req.on('end', () => {
       try {
         resolve(body ? JSON.parse(body) : {});
@@ -580,17 +570,20 @@ function readJsonBody(req) {
 
 const server = http.createServer(async (req, res) => {
   try {
+    // ✅ FIX 5: WORKER_SECRET авторизация
+    const SECRET = process.env.WORKER_SECRET;
+    if (SECRET && req.headers['x-worker-secret'] !== SECRET) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+    }
+
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({
-        ok: true,
-        service: 'julian_full_worker'
-      }));
+      return res.end(JSON.stringify({ ok: true, service: 'julian_full_worker' }));
     }
 
     if (req.method === 'POST' && req.url === '/enrich') {
       const payload = await readJsonBody(req);
-
       const rawProductId = payload.raw_product_id || payload.id;
 
       if (!rawProductId) {
@@ -607,12 +600,8 @@ const server = http.createServer(async (req, res) => {
     return res.end(JSON.stringify({ ok: false, error: 'Not found' }));
   } catch (error) {
     console.error('Worker request error:', error.message);
-
     res.writeHead(500, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify({
-      ok: false,
-      error: error.message
-    }));
+    return res.end(JSON.stringify({ ok: false, error: error.message }));
   }
 });
 

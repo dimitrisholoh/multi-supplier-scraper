@@ -5,9 +5,9 @@ const crypto = require('crypto');
 const SUPPLIER_NAME = 'Julian Fashion Srl';
 const SUPPLIER_SLUG = 'julian-fashion';
 
-const LIMIT_PRODUCTS = Number(process.env.LIMIT_PRODUCTS || 999);  // ✅ FIX: было 50
+const LIMIT_PRODUCTS = Number(process.env.LIMIT_PRODUCTS || 999);
 const START_PAGE = Number(process.env.START_PAGE || 1);
-const MAX_PAGES = Number(process.env.MAX_PAGES || 5);              // ✅ FIX: было 4
+const MAX_PAGES = Number(process.env.MAX_PAGES || 20);
 
 const LISTING_URL = process.env.JULIAN_LISTING_URL || 'https://b2bfashion.online/306-all';
 
@@ -105,9 +105,7 @@ async function openListing(page, pageNumber) {
   }
 
   const count = await page.locator('.product-miniature').count();
-
   console.log('[DELTA] Products found on page:', count);
-
   return count;
 }
 
@@ -128,13 +126,25 @@ async function collectProductsFromListing(page, pageNumber) {
 
     const data = await card.evaluate(el => {
       const text = el.innerText || '';
-      const html = el.innerHTML || '';
 
       const lines = text
         .split('\n')
         .map(x => x.replace(/\s+/g, ' ').trim())
         .filter(Boolean);
 
+      // ── Product URL ──
+      const productUrl =
+        el.querySelector('a.product-name')?.href ||
+        el.querySelector('a.product_img_link')?.href ||
+        el.querySelector('.product-title a')?.href ||
+        el.querySelector('h2 a')?.href ||
+        el.querySelector('h3 a')?.href ||
+        el.querySelector('a[href*="/306-"]')?.href ||
+        el.querySelector('a[href*="b2bfashion"]')?.href ||
+        el.querySelector('a')?.href ||
+        null;
+
+      // ── Images ──
       const imageUrls = Array.from(el.querySelectorAll('img'))
         .map(img =>
           img.getAttribute('data-full-size-image-url') ||
@@ -216,14 +226,14 @@ async function collectProductsFromListing(page, pageNumber) {
 
       return {
         lines,
-        html,
         brand,
         season: seasonLine,
         product_code: productCodeLine,
         money_matches: moneyMatches,
         discount_percent: discountMatch ? discountMatch[0] : null,
         image_urls: imageUrls,
-        variant_rows: variantRows
+        variant_rows: variantRows,
+        product_url: productUrl
       };
     });
 
@@ -232,38 +242,29 @@ async function collectProductsFromListing(page, pageNumber) {
 
     if (!productCode) {
       skipped++;
-      // ✅ FIX: убран детальный лог для каждого пропуска — только счётчик
       continue;
     }
 
     // ── Prices ──
     const retailPrice = toNumber(data.money_matches[0]);
-
-    // ✅ FIX: было || (если finalPrice=0 брал retailPrice), теперь ??
     const finalPrice = toNumber(
       data.money_matches[data.money_matches.length - 1]
     ) ?? toNumber(data.money_matches[0]);
 
-    // Скидка всегда положительная
     const discountPercent = data.discount_percent
       ? Math.abs(toNumber(data.discount_percent))
       : null;
 
     // ── Season / Sale ──
     const seasonRaw = cleanText(data.season);
-    const isSale =
-      String(seasonRaw || '').trim().toLowerCase() === 'sale';
+    const isSale = String(seasonRaw || '').trim().toLowerCase() === 'sale';
 
     // ── Product Key ──
-    // Формат: brand_slug-product_code-color_slug
-    // Delta не знает цвет — используем 'unknown'
     const brandSlug = buildSlug(data.brand);
     const productKey = `${brandSlug}-${productCode}-unknown`;
 
     // ── Product Hash ──
-    // Hash считается только от данных которые меняются при delta
     const scannedAt = new Date().toISOString();
-
     const variantsForHash = [];
 
     // ── Variants ──
@@ -334,15 +335,13 @@ async function collectProductsFromListing(page, pageNumber) {
 
     // ── Build Product ──
     const product = {
-      // Поставщик
       supplier_name: SUPPLIER_NAME,
       supplier_slug: SUPPLIER_SLUG,
       supplier_sku: productCode,
       supplier_product_code: productCode,
-      supplier_product_url: null,
+      supplier_product_url: data.product_url || null,
       listing_url: buildPageUrl(pageNumber),
 
-      // Данные товара (delta знает только часть)
       brand_raw: cleanText(data.brand),
       title_raw: null,
       description_raw: null,
@@ -356,53 +355,44 @@ async function collectProductsFromListing(page, pageNumber) {
       made_in_raw: null,
       size_and_fit_raw: null,
 
-      // Цены
       supplier_retail_price: retailPrice,
       supplier_final_price: finalPrice,
       supplier_discount_percent: discountPercent,
       currency: 'EUR',
       is_sale: isSale,
 
-      // Ключи
       product_key: productKey,
       product_hash: productHash,
 
-      // Вложенные массивы
       images_raw: imagesRaw,
       variants_raw: variantsRaw,
 
-      // Raw данные для отладки
       raw_json: {
         source: 'listing_delta_only',
         page_number: pageNumber,
         card_index: i + 1,
         lines: data.lines,
         image_urls: data.image_urls,
-        variant_rows: data.variant_rows
+        variant_rows: data.variant_rows,
+        product_url: data.product_url
       },
 
-      // Статусы
       scrape_status: 'ingested',
       scan_mode: 'delta',
 
-      // Флаги
       is_active: true,
       is_archived: false,
 
-      // Временные метки
       scanned_at: scannedAt,
       ingested_at: scannedAt
     };
 
     products.push(product);
 
-    // ✅ FIX: краткий лог вместо объекта — меньше нагрузки на Railway logs
-    console.log(`[DELTA OK] p${pageNumber}#${i+1} ${product.brand_raw} ${product.supplier_product_code} retail:${retailPrice} final:${finalPrice} disc:${discountPercent}% vars:${variantsRaw.length}`);
+    console.log(`[DELTA OK] p${pageNumber}#${i+1} ${product.brand_raw} ${product.supplier_product_code} url:${data.product_url ? 'YES' : 'NO'} retail:${retailPrice} final:${finalPrice} vars:${variantsRaw.length}`);
   }
 
-  // ✅ FIX: итоговый лог по странице
   console.log(`[DELTA PAGE ${pageNumber}] collected:${products.length} skipped:${skipped}`);
-
   return products;
 }
 

@@ -143,7 +143,7 @@ async function collectProductsFromListing(page, pageNumber) {
             !href.includes('javascript:') &&
             (href.includes('/306-') || href.includes('b2bfashion'))
           );
-        return valid[0] || null;
+        return valid[0]?.replace(/#.*$/, '') || null;
       })();
 
       const imageUrls = Array.from(el.querySelectorAll('img'))

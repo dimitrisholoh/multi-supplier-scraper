@@ -408,7 +408,12 @@ async function sendWebhook(products, batchIndex) {
       scraped_at: new Date().toISOString(),
       products
     },
-    { timeout: 120000 }
+    {
+      timeout: 120000,
+      headers: {
+        'x-wbb-secret': process.env.WBB_WEBHOOK_SECRET
+      }
+    }
   );
 
   console.log(`[WEBHOOK] Batch ${batchIndex + 1} status: ${response.status} — sent successfully`);

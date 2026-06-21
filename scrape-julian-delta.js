@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const SUPPLIER_NAME = 'Julian Fashion Srl';
 const SUPPLIER_SLUG = 'julian-fashion';
  
-const LIMIT_PRODUCTS = Number(process.env.LIMIT_PRODUCTS || 3);
+const LIMIT_PRODUCTS = Number(process.env.LIMIT_PRODUCTS || 4);
 const START_PAGE = Number(process.env.START_PAGE || 1);
 const MAX_PAGES = Number(process.env.MAX_PAGES || 1);
 const BATCH_SIZE = Number(process.env.BATCH_SIZE || 50);

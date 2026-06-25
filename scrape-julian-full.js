@@ -465,6 +465,7 @@ async function enrichJulianProduct(rawProductId) {
   }
  
   const supplierProductCode = cleanText(rawProduct.supplier_product_code);
+  console.log('DEBUG: code version check, supplier_product_url =', rawProduct.supplier_product_url);
  
   if (!supplierProductCode) {
     throw new Error('supplier_product_code is missing');
@@ -500,33 +501,37 @@ async function enrichJulianProduct(rawProductId) {
   let directIdProduct = null;
   if (rawProduct.supplier_product_url && rawProduct.supplier_product_url.startsWith('http')) {
     const match = rawProduct.supplier_product_url.match(/\/(\d+)-[^/]+\.html/);
+    console.log('DEBUG: regex match result =', match);
     if (match) {
       directIdProduct = match[1];
     }
+  } else {
+    console.log('DEBUG: supplier_product_url missing or not http, skipping direct path');
   }
-
+  console.log('DEBUG: directIdProduct =', directIdProduct);
+ 
   if (directIdProduct) {
     try {
       const directUrl = `${process.env.JULIAN_LOGIN_URL}/index.php?controller=product?more=53&action=quickview&id_product=${directIdProduct}`;
       console.log('Trying direct product page:', { supplierProductCode, directIdProduct, directUrl });
-
+ 
       await page.goto(directUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
       await page.waitForSelector('#product-details', { timeout: 15000 });
-
+ 
       const rawDataProduct = await page.getAttribute('#product-details', 'data-product');
       const product = JSON.parse(rawDataProduct);
       const fullHtml = await page.content();
-
+ 
       const updatePayload = buildEnrichedPayload(rawProduct, product, fullHtml);
       const updated = await updateRawProduct(rawProductId, updatePayload);
-
+ 
       console.log('JULIAN FULL ENRICHMENT COMPLETED (direct):', {
         raw_product_id: rawProductId,
         supplier_product_code: supplierProductCode,
         product_key: updatePayload.product_key,
         images_count: updatePayload.images_raw.length
       });
-
+ 
       return { ok: true, raw_product_id: rawProductId, supplier_product_code: supplierProductCode, updated };
     } catch (directError) {
       console.log('Direct product page failed, falling back to listing search:', {
@@ -536,7 +541,7 @@ async function enrichJulianProduct(rawProductId) {
       });
     }
   }
-
+ 
   let found = null;
     
  

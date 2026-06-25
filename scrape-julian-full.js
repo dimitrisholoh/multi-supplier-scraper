@@ -516,7 +516,7 @@ async function enrichJulianProduct(rawProductId) {
       console.log('Trying direct product page:', { supplierProductCode, directIdProduct, directUrl });
  
       await page.goto(directUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForSelector('#product-details', { timeout: 15000 });
+      await page.waitForSelector('#product-details', { timeout: 15000, state: 'attached' });
  
       const rawDataProduct = await page.getAttribute('#product-details', 'data-product');
       const product = JSON.parse(rawDataProduct);

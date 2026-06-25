@@ -492,21 +492,53 @@ async function enrichJulianProduct(rawProductId) {
     // ✅ FIX 3: maxPages 3 → 10
     const maxPages = Number(process.env.JULIAN_FULL_MAX_PAGES || 10);
  
-    // ✅ FIX 4: если supplier_product_url уже есть — используем его напрямую
-    if (rawProduct.supplier_product_url &&
-        rawProduct.supplier_product_url.startsWith('http') &&
-        !rawProduct.supplier_product_url.includes('javascript:')) {
-      console.log('Using existing product URL:', rawProduct.supplier_product_url);
- 
-      await page.goto(rawProduct.supplier_product_url, {
-        waitUntil: 'domcontentloaded',
-        timeout: 120000
-      });
- 
-      await page.waitForTimeout(5000);
+    // FIX: прямой переход по id_product вместо повторного скана листинга.
+  // id_product извлекается из уже сохранённого supplier_product_url
+  // (число перед артикулом в пути, напр. .../hand-bags/1017707-w2b0123nap0no.html → 1017707).
+  // Подтверждено вручную: страница содержит #product-details[data-product]
+  // с тем же JSON, что и quickview — getFeature()/buildEnrichedPayload() работают без изменений.
+  let directIdProduct = null;
+  if (rawProduct.supplier_product_url && rawProduct.supplier_product_url.startsWith('http')) {
+    const match = rawProduct.supplier_product_url.match(/\/(\d+)-[^/]+\.html/);
+    if (match) {
+      directIdProduct = match[1];
     }
- 
-    let found = null;
+  }
+
+  if (directIdProduct) {
+    try {
+      const directUrl = `${process.env.JULIAN_LOGIN_URL}/index.php?controller=product?more=53&action=quickview&id_product=${directIdProduct}`;
+      console.log('Trying direct product page:', { supplierProductCode, directIdProduct, directUrl });
+
+      await page.goto(directUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForSelector('#product-details', { timeout: 15000 });
+
+      const rawDataProduct = await page.getAttribute('#product-details', 'data-product');
+      const product = JSON.parse(rawDataProduct);
+      const fullHtml = await page.content();
+
+      const updatePayload = buildEnrichedPayload(rawProduct, product, fullHtml);
+      const updated = await updateRawProduct(rawProductId, updatePayload);
+
+      console.log('JULIAN FULL ENRICHMENT COMPLETED (direct):', {
+        raw_product_id: rawProductId,
+        supplier_product_code: supplierProductCode,
+        product_key: updatePayload.product_key,
+        images_count: updatePayload.images_raw.length
+      });
+
+      return { ok: true, raw_product_id: rawProductId, supplier_product_code: supplierProductCode, updated };
+    } catch (directError) {
+      console.log('Direct product page failed, falling back to listing search:', {
+        supplierProductCode,
+        directIdProduct,
+        error: directError.message
+      });
+    }
+  }
+
+  let found = null;
+    
  
     for (let pageNumber = 1; pageNumber <= maxPages; pageNumber++) {
       await openListing(page, pageNumber);

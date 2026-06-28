@@ -465,7 +465,6 @@ async function enrichJulianProduct(rawProductId) {
   }
  
   const supplierProductCode = cleanText(rawProduct.supplier_product_code);
-  console.log('DEBUG: code version check, supplier_product_url =', rawProduct.supplier_product_url);
  
   if (!supplierProductCode) {
     throw new Error('supplier_product_code is missing');
@@ -505,9 +504,10 @@ async function enrichJulianProduct(rawProductId) {
         directUrl = supplierUrl;
         console.log('[ENRICH] fast path: quickview URL used directly:', directUrl);
       } else if (productPageMatch) {
-        const directIdProduct = productPageMatch[1];
-        directUrl = `${process.env.JULIAN_LOGIN_URL}/index.php?controller=product?more=53&action=quickview&id_product=${directIdProduct}`;
-        console.log('[ENRICH] fast path: extracted id_product from product page URL:', directIdProduct);
+        // Product page URL (/N-code.html) set after first enrichment — use directly.
+        // Verified: page.goto() on this URL finds #product-details[data-product] with full product JSON.
+        directUrl = supplierUrl;
+        console.log('[ENRICH] fast path: product page URL used directly:', directUrl);
       } else {
         console.log('[ENRICH] fast path skipped: URL does not match known patterns');
       }

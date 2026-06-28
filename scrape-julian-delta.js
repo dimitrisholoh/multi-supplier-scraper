@@ -259,12 +259,17 @@ async function collectProductsFromListing(page, pageNumber) {
         discount_percent: discountMatch ? discountMatch[0] : null,
         image_urls: imageUrls,
         variant_rows: variantRows,
-        product_url: productUrl
+        product_url: productUrl,
+        all_hrefs: Array.from(el.querySelectorAll('a[href]')).map(a => a.href)
       };
     });
  
+    if (i < 3) {
+      console.log(`[DEBUG hrefs] card ${i+1} (${cleanText(data.brand)} / ${cleanText(data.product_code)}):`, JSON.stringify(data.all_hrefs));
+    }
+
     const productCode = cleanText(data.product_code);
- 
+
     if (!productCode) {
       skipped++;
       continue;

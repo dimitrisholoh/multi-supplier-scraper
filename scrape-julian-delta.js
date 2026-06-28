@@ -250,6 +250,18 @@ async function collectProductsFromListing(page, pageNumber) {
         delete v.key;
       }
  
+      const cardDataAttrs = Object.fromEntries(
+        Array.from(el.attributes)
+          .filter(a => a.name.startsWith('data-'))
+          .map(a => [a.name, a.value])
+      );
+      const quickviewEl = el.querySelector('[data-id-product], .quick-view, .quickview, [data-product-id]');
+      const quickviewAttrs = quickviewEl ? Object.fromEntries(
+        Array.from(quickviewEl.attributes)
+          .filter(a => a.name.startsWith('data-'))
+          .map(a => [a.name, a.value])
+      ) : null;
+
       return {
         lines,
         brand,
@@ -260,12 +272,16 @@ async function collectProductsFromListing(page, pageNumber) {
         image_urls: imageUrls,
         variant_rows: variantRows,
         product_url: productUrl,
-        all_hrefs: Array.from(el.querySelectorAll('a[href]')).map(a => a.href)
+        all_hrefs: Array.from(el.querySelectorAll('a[href]')).map(a => a.href),
+        card_data_attrs: cardDataAttrs,
+        quickview_data_attrs: quickviewAttrs
       };
     });
  
     if (i < 3) {
       console.log(`[DEBUG hrefs] card ${i+1} (${cleanText(data.brand)} / ${cleanText(data.product_code)}):`, JSON.stringify(data.all_hrefs));
+      console.log(`[DEBUG data-attrs] card ${i+1}:`, JSON.stringify(data.card_data_attrs));
+      console.log(`[DEBUG quickview-attrs] card ${i+1}:`, JSON.stringify(data.quickview_data_attrs));
     }
 
     const productCode = cleanText(data.product_code);

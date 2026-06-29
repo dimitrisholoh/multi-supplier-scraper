@@ -493,6 +493,7 @@ async function enrichJulianProduct(rawProductId) {
     const maxPages = Number(process.env.JULIAN_FULL_MAX_PAGES || 10);
  
     let directUrl = null;
+    let isQuickviewUrl = false;
     const supplierUrl = rawProduct.supplier_product_url;
     console.log('[ENRICH] supplier_product_url:', supplierUrl);
 
@@ -502,6 +503,7 @@ async function enrichJulianProduct(rawProductId) {
 
       if (quickviewMatch) {
         directUrl = supplierUrl;
+        isQuickviewUrl = true;
         console.log('[ENRICH] fast path: quickview URL used directly:', directUrl);
       } else if (productPageMatch) {
         // Product page URL (/N-code.html) set after first enrichment — use directly.
@@ -519,24 +521,54 @@ async function enrichJulianProduct(rawProductId) {
       try {
         console.log('[ENRICH] trying direct URL:', { supplierProductCode, directUrl });
 
-        await page.goto(directUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        await page.waitForSelector('#product-details', { timeout: 40000, state: 'attached' });
+        if (isQuickviewUrl) {
+          const directResponse = await page.request.get(directUrl, {
+            timeout: 30000,
+            headers: {
+              'X-Requested-With': 'XMLHttpRequest',
+              Accept: 'application/json, text/javascript, */*; q=0.01'
+            }
+          });
 
-        const rawDataProduct = await page.getAttribute('#product-details', 'data-product');
-        const product = JSON.parse(rawDataProduct);
-        const fullHtml = await page.content();
+          if (!directResponse.ok()) {
+            throw new Error(`Quickview request failed: ${directResponse.status()}`);
+          }
 
-        const updatePayload = buildEnrichedPayload(rawProduct, product, fullHtml);
-        const updated = await updateRawProduct(rawProductId, updatePayload);
+          const json = await directResponse.json();
+          if (!json.product) throw new Error('No product in quickview response');
 
-        console.log('JULIAN FULL ENRICHMENT COMPLETED (direct):', {
-          raw_product_id: rawProductId,
-          supplier_product_code: supplierProductCode,
-          product_key: updatePayload.product_key,
-          images_count: updatePayload.images_raw.length
-        });
+          const updatePayload = buildEnrichedPayload(rawProduct, json.product, json.quickview_html || '');
+          const updated = await updateRawProduct(rawProductId, updatePayload);
 
-        return { ok: true, raw_product_id: rawProductId, supplier_product_code: supplierProductCode, updated };
+          console.log('JULIAN FULL ENRICHMENT COMPLETED (direct quickview):', {
+            raw_product_id: rawProductId,
+            supplier_product_code: supplierProductCode,
+            product_key: updatePayload.product_key,
+            images_count: updatePayload.images_raw.length
+          });
+
+          return { ok: true, raw_product_id: rawProductId, supplier_product_code: supplierProductCode, updated };
+
+        } else {
+          await page.goto(directUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+          await page.waitForSelector('#product-details', { timeout: 40000, state: 'attached' });
+
+          const rawDataProduct = await page.getAttribute('#product-details', 'data-product');
+          const product = JSON.parse(rawDataProduct);
+          const fullHtml = await page.content();
+
+          const updatePayload = buildEnrichedPayload(rawProduct, product, fullHtml);
+          const updated = await updateRawProduct(rawProductId, updatePayload);
+
+          console.log('JULIAN FULL ENRICHMENT COMPLETED (direct):', {
+            raw_product_id: rawProductId,
+            supplier_product_code: supplierProductCode,
+            product_key: updatePayload.product_key,
+            images_count: updatePayload.images_raw.length
+          });
+
+          return { ok: true, raw_product_id: rawProductId, supplier_product_code: supplierProductCode, updated };
+        }
       } catch (directError) {
         console.log('[ENRICH] direct URL failed, falling back to listing search:', {
           supplierProductCode,

@@ -10,7 +10,12 @@ const SUPPLIER_SLUG = 'julian-fashion';
 const LISTING_URL = process.env.JULIAN_LISTING_URL || 'https://b2bfashion.online/306-all';
  
 const RAW_PRODUCTS_TABLE = '1_step_supplier_raw_products';
- 
+
+let globalBrowser = null;
+let globalPage = null;
+let isInitialized = false;
+let listingNavigationBusy = false;
+
 // ✅ FIX 1: buildSlug функция
 function buildSlug(value) {
   if (!value) return 'unknown';
@@ -211,7 +216,47 @@ async function login(page) {
  
   console.log('Login completed. URL:', page.url());
 }
- 
+
+async function initSession() {
+  console.log('[SESSION] Initializing browser session...');
+  globalBrowser = await chromium.launch({
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu'
+    ]
+  });
+  globalPage = await globalBrowser.newPage({
+    viewport: { width: 1440, height: 1200 }
+  });
+  globalPage.setDefaultTimeout(30000);
+  await login(globalPage);
+  isInitialized = true;
+  console.log('[SESSION] Browser session ready.');
+  globalBrowser.on('disconnected', async () => {
+    console.log('[SESSION] Browser disconnected, re-initializing...');
+    isInitialized = false;
+    await initSession().catch(err =>
+      console.error('[SESSION] Re-init failed:', err.message)
+    );
+  });
+}
+
+async function ensureSession() {
+  if (!isInitialized || !globalPage) {
+    console.log('[SESSION] Not initialized, starting session...');
+    await initSession();
+    return;
+  }
+  if (globalPage.url().includes('login')) {
+    console.log('[SESSION] Session expired (url:', globalPage.url(), '), re-initializing...');
+    isInitialized = false;
+    await initSession();
+  }
+}
+
 async function openListing(page, pageNumber = 1) {
   const pageUrl = pageNumber > 1 ? `${LISTING_URL}?page=${pageNumber}` : LISTING_URL;
  
@@ -470,25 +515,9 @@ async function enrichJulianProduct(rawProductId) {
     throw new Error('supplier_product_code is missing');
   }
  
-  const browser = await chromium.launch({
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu'
-    ]
-  });
- 
-  const page = await browser.newPage({
-    viewport: { width: 1440, height: 1200 }
-  });
- 
-  page.setDefaultTimeout(30000);
- 
   try {
-    await login(page);
- 
+    await ensureSession();
+
     // ✅ FIX 3: maxPages 3 → 10
     const maxPages = Number(process.env.JULIAN_FULL_MAX_PAGES || 10);
  
@@ -522,7 +551,7 @@ async function enrichJulianProduct(rawProductId) {
         console.log('[ENRICH] trying direct URL:', { supplierProductCode, directUrl });
 
         if (isQuickviewUrl) {
-          const directResponse = await page.request.get(directUrl, {
+          const directResponse = await globalPage.request.get(directUrl, {
             timeout: 30000,
             headers: {
               'X-Requested-With': 'XMLHttpRequest',
@@ -550,12 +579,12 @@ async function enrichJulianProduct(rawProductId) {
           return { ok: true, raw_product_id: rawProductId, supplier_product_code: supplierProductCode, updated };
 
         } else {
-          await page.goto(directUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-          await page.waitForSelector('#product-details', { timeout: 40000, state: 'attached' });
+          await globalPage.goto(directUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+          await globalPage.waitForSelector('#product-details', { timeout: 40000, state: 'attached' });
 
-          const rawDataProduct = await page.getAttribute('#product-details', 'data-product');
+          const rawDataProduct = await globalPage.getAttribute('#product-details', 'data-product');
           const product = JSON.parse(rawDataProduct);
-          const fullHtml = await page.content();
+          const fullHtml = await globalPage.content();
 
           const updatePayload = buildEnrichedPayload(rawProduct, product, fullHtml);
           const updated = await updateRawProduct(rawProductId, updatePayload);
@@ -578,13 +607,18 @@ async function enrichJulianProduct(rawProductId) {
       }
     }
  
-  let found = null;
+    while (listingNavigationBusy) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    listingNavigationBusy = true;
+    try {
+    let found = null;
     
  
     for (let pageNumber = 1; pageNumber <= maxPages; pageNumber++) {
-      await openListing(page, pageNumber);
- 
-      const cardIndex = await findCardIndexByProductCode(page, supplierProductCode);
+      await openListing(globalPage, pageNumber);
+
+      const cardIndex = await findCardIndexByProductCode(globalPage, supplierProductCode);
  
       if (cardIndex >= 0) {
         console.log('Product card found:', { supplierProductCode, pageNumber, cardIndex });
@@ -600,7 +634,7 @@ async function enrichJulianProduct(rawProductId) {
     }
  
     const { product, quickview_html } = await clickQuickviewByCardIndex(
-      page,
+      globalPage,
       found.cardIndex,
       supplierProductCode
     );
@@ -624,6 +658,9 @@ async function enrichJulianProduct(rawProductId) {
       supplier_product_code: supplierProductCode,
       updated
     };
+    } finally {
+      listingNavigationBusy = false;
+    }
   } catch (error) {
     console.error('JULIAN FULL ENRICHMENT ERROR:', error.message);
  
@@ -631,7 +668,9 @@ async function enrichJulianProduct(rawProductId) {
       console.error('ERROR STATUS:', error.response.status);
       console.error('ERROR DATA:', JSON.stringify(error.response.data, null, 2));
     }
- 
+
+    await globalPage.goto('about:blank').catch(() => {});
+
     await updateRawProduct(rawProductId, {
       enrichment_status: 'error',
       enrichment_needed: true,
@@ -642,8 +681,6 @@ async function enrichJulianProduct(rawProductId) {
     });
  
     throw error;
-  } finally {
-    await browser.close();
   }
 }
  
@@ -663,6 +700,11 @@ function readJsonBody(req) {
  
 const server = http.createServer(async (req, res) => {
   try {
+    if (req.method === 'GET' && req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: true, service: 'julian_full_worker' }));
+    }
+
     // ✅ FIX 5: WORKER_SECRET авторизация
     const SECRET = process.env.WORKER_SECRET;
     if (SECRET && req.headers['x-worker-secret'] !== SECRET) {
@@ -670,12 +712,12 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
     }
  
-    if (req.method === 'GET' && req.url === '/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ ok: true, service: 'julian_full_worker' }));
-    }
- 
     if (req.method === 'POST' && req.url === '/enrich') {
+      if (!isInitialized) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: false, error: 'Service initializing, retry shortly' }));
+      }
+
       const payload = await readJsonBody(req);
       const rawProductId = payload.raw_product_id || payload.id;
  
@@ -700,4 +742,8 @@ const server = http.createServer(async (req, res) => {
  
 server.listen(PORT, () => {
   console.log(`Julian full enrichment worker listening on port ${PORT}`);
+  initSession().catch(err => {
+    console.error('[SESSION] Failed to initialize:', err.message);
+    process.exit(1);
+  });
 });

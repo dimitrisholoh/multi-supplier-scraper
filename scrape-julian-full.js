@@ -551,19 +551,19 @@ async function enrichJulianProduct(rawProductId) {
         console.log('[ENRICH] trying direct URL:', { supplierProductCode, directUrl });
 
         if (isQuickviewUrl) {
-          const directResponse = await globalPage.request.get(directUrl, {
+          const cookies = await globalPage.context().cookies();
+          const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+
+          const directResponse = await axios.get(directUrl, {
             timeout: 30000,
             headers: {
               'X-Requested-With': 'XMLHttpRequest',
-              Accept: 'application/json, text/javascript, */*; q=0.01'
+              Accept: 'application/json, text/javascript, */*; q=0.01',
+              Cookie: cookieHeader
             }
           });
 
-          if (!directResponse.ok()) {
-            throw new Error(`Quickview request failed: ${directResponse.status()}`);
-          }
-
-          const json = await directResponse.json();
+          const json = directResponse.data;
           if (!json.product) throw new Error('No product in quickview response');
 
           const updatePayload = buildEnrichedPayload(rawProduct, json.product, json.quickview_html || '');

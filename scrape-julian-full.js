@@ -669,8 +669,6 @@ async function enrichJulianProduct(rawProductId) {
       console.error('ERROR DATA:', JSON.stringify(error.response.data, null, 2));
     }
 
-    await globalPage.goto('about:blank').catch(() => {});
-
     await updateRawProduct(rawProductId, {
       enrichment_status: 'error',
       enrichment_needed: true,

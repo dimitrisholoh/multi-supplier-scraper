@@ -559,6 +559,7 @@ async function enrichJulianProduct(rawProductId) {
             headers: {
               'X-Requested-With': 'XMLHttpRequest',
               Accept: 'application/json, text/javascript, */*; q=0.01',
+              Referer: 'https://b2bfashion.online/306-all',
               Cookie: cookieHeader
             }
           });

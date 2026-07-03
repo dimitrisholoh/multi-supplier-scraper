@@ -159,9 +159,11 @@ async function collectProductsFromListing(page, pageNumber) {
         .filter(Boolean);
  
       const idProduct = el.getAttribute('data-id-product') || null;
-      const productUrl = idProduct
-        ? `https://b2bfashion.online/index.php?controller=product&action=quickview&id_product=${idProduct}`
-        : null;
+      const productUrl =
+        el.querySelector('a[href*="b2bfashion.online"][href$=".html"]')?.href ||
+        (idProduct
+          ? `https://b2bfashion.online/index.php?controller=product&action=quickview&id_product=${idProduct}`
+          : null);
  
       const imageUrls = Array.from(el.querySelectorAll('img'))
         .map(img =>

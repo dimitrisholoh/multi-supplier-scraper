@@ -579,24 +579,32 @@ async function enrichJulianProduct(rawProductId) {
           return { ok: true, raw_product_id: rawProductId, supplier_product_code: supplierProductCode, updated };
 
         } else {
-          await globalPage.goto(directUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-          await globalPage.waitForSelector('#product-details', { timeout: 40000, state: 'attached' });
+          while (listingNavigationBusy) {
+            await new Promise(resolve => setTimeout(resolve, 200));
+          }
+          listingNavigationBusy = true;
+          try {
+            await globalPage.goto(directUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            await globalPage.waitForSelector('#product-details', { timeout: 40000, state: 'attached' });
 
-          const rawDataProduct = await globalPage.getAttribute('#product-details', 'data-product');
-          const product = JSON.parse(rawDataProduct);
-          const fullHtml = await globalPage.content();
+            const rawDataProduct = await globalPage.getAttribute('#product-details', 'data-product');
+            const product = JSON.parse(rawDataProduct);
+            const fullHtml = await globalPage.content();
 
-          const updatePayload = buildEnrichedPayload(rawProduct, product, fullHtml);
-          const updated = await updateRawProduct(rawProductId, updatePayload);
+            const updatePayload = buildEnrichedPayload(rawProduct, product, fullHtml);
+            const updated = await updateRawProduct(rawProductId, updatePayload);
 
-          console.log('JULIAN FULL ENRICHMENT COMPLETED (direct):', {
-            raw_product_id: rawProductId,
-            supplier_product_code: supplierProductCode,
-            product_key: updatePayload.product_key,
-            images_count: updatePayload.images_raw.length
-          });
+            console.log('JULIAN FULL ENRICHMENT COMPLETED (direct):', {
+              raw_product_id: rawProductId,
+              supplier_product_code: supplierProductCode,
+              product_key: updatePayload.product_key,
+              images_count: updatePayload.images_raw.length
+            });
 
-          return { ok: true, raw_product_id: rawProductId, supplier_product_code: supplierProductCode, updated };
+            return { ok: true, raw_product_id: rawProductId, supplier_product_code: supplierProductCode, updated };
+          } finally {
+            listingNavigationBusy = false;
+          }
         }
       } catch (directError) {
         console.log('[ENRICH] direct URL failed, falling back to listing search:', {

@@ -9,7 +9,7 @@ const SUPPLIER_NAME = 'Julian Fashion Srl';
 const SUPPLIER_SLUG = 'julian-fashion';
 const LISTING_URL = process.env.JULIAN_LISTING_URL || 'https://b2bfashion.online/306-all';
  
-const RAW_PRODUCTS_TABLE = '1_step_supplier_raw_products';
+const RAW_PRODUCTS_TABLE = 'supplier_raw_products';
 
 let globalBrowser = null;
 let globalPage = null;

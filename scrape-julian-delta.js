@@ -160,7 +160,7 @@ async function collectProductsFromListing(page, pageNumber) {
  
       const idProduct = el.getAttribute('data-id-product') || null;
       const productUrl =
-        el.querySelector('a[href*="b2bfashion.online"][href$=".html"]')?.href ||
+        el.querySelector('a[href$=".html"]')?.href ||
         (idProduct
           ? `https://b2bfashion.online/index.php?controller=product&action=quickview&id_product=${idProduct}`
           : null);

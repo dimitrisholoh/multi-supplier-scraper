@@ -627,6 +627,14 @@ async function enrichJulianProduct(rawProductId) {
     for (let pageNumber = 1; pageNumber <= maxPages; pageNumber++) {
       await openListing(globalPage, pageNumber);
 
+      const cardCount = await globalPage.$$eval('article.product-miniature', els => els.length);
+      if (cardCount === 0) {
+        console.log('[SESSION] Empty listing detected, re-initializing session...');
+        isInitialized = false;
+        await initSession();
+        await openListing(globalPage, pageNumber);
+      }
+
       const cardIndex = await findCardIndexByProductCode(globalPage, supplierProductCode);
  
       if (cardIndex >= 0) {

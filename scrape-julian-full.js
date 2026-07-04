@@ -14,6 +14,7 @@ const RAW_PRODUCTS_TABLE = '1_step_supplier_raw_products';
 let globalBrowser = null;
 let globalPage = null;
 let isInitialized = false;
+let isInitializing = false;
 let listingNavigationBusy = false;
 
 // ✅ FIX 1: buildSlug функция
@@ -218,30 +219,41 @@ async function login(page) {
 }
 
 async function initSession() {
-  console.log('[SESSION] Initializing browser session...');
-  globalBrowser = await chromium.launch({
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu'
-    ]
-  });
-  globalPage = await globalBrowser.newPage({
-    viewport: { width: 1440, height: 1200 }
-  });
-  globalPage.setDefaultTimeout(30000);
-  await login(globalPage);
-  isInitialized = true;
-  console.log('[SESSION] Browser session ready.');
-  globalBrowser.on('disconnected', async () => {
-    console.log('[SESSION] Browser disconnected, re-initializing...');
-    isInitialized = false;
-    await initSession().catch(err =>
-      console.error('[SESSION] Re-init failed:', err.message)
-    );
-  });
+  if (isInitializing) {
+    while (isInitializing) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    return;
+  }
+  isInitializing = true;
+  try {
+    console.log('[SESSION] Initializing browser session...');
+    globalBrowser = await chromium.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu'
+      ]
+    });
+    globalPage = await globalBrowser.newPage({
+      viewport: { width: 1440, height: 1200 }
+    });
+    globalPage.setDefaultTimeout(30000);
+    await login(globalPage);
+    isInitialized = true;
+    console.log('[SESSION] Browser session ready.');
+    globalBrowser.on('disconnected', async () => {
+      console.log('[SESSION] Browser disconnected, re-initializing...');
+      isInitialized = false;
+      await initSession().catch(err =>
+        console.error('[SESSION] Re-init failed:', err.message)
+      );
+    });
+  } finally {
+    isInitializing = false;
+  }
 }
 
 async function ensureSession() {
@@ -627,9 +639,9 @@ async function enrichJulianProduct(rawProductId) {
     for (let pageNumber = 1; pageNumber <= maxPages; pageNumber++) {
       await openListing(globalPage, pageNumber);
 
-      const cardCount = await globalPage.$$eval('article.product-miniature', els => els.length);
-      if (cardCount === 0) {
-        console.log('[SESSION] Empty listing detected, re-initializing session...');
+      const currentUrl = globalPage.url();
+      if (currentUrl.includes('login') || !currentUrl.includes('b2bfashion.online')) {
+        console.log('[SESSION] Redirect detected after openListing (url:', currentUrl, '), re-initializing...');
         isInitialized = false;
         await initSession();
         await openListing(globalPage, pageNumber);

@@ -725,6 +725,8 @@ function readJsonBody(req) {
   });
 }
  
+const HEARTBEAT_INTERVAL_MS = Number(process.env.JULIAN_FULL_HEARTBEAT_MS || 60000);
+
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && req.url === '/health') {
@@ -738,7 +740,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
     }
- 
+
     if (req.method === 'POST' && req.url === '/enrich') {
       if (!isInitialized) {
         res.writeHead(503, { 'Content-Type': 'application/json' });
@@ -747,17 +749,30 @@ const server = http.createServer(async (req, res) => {
 
       const payload = await readJsonBody(req);
       const rawProductId = payload.raw_product_id || payload.id;
- 
+
       if (!rawProductId) {
         throw new Error('raw_product_id is missing');
       }
- 
-      const result = await enrichJulianProduct(rawProductId);
- 
+
+      // Headers коммитятся сразу, чтобы периодические write() ниже не давали
+      // Railway edge посчитать соединение простаивающим (5-мин idle-лимит,
+      // см. 08_BACKLOG.md §0г). Статус теперь всегда 200 — успех/неудача
+      // сигналится через `ok` в теле, не через HTTP-статус.
       res.writeHead(200, { 'Content-Type': 'application/json' });
+      const heartbeat = setInterval(() => res.write(' '), HEARTBEAT_INTERVAL_MS);
+
+      let result;
+      try {
+        result = await enrichJulianProduct(rawProductId);
+      } catch (error) {
+        result = { ok: false, error: error.message };
+      } finally {
+        clearInterval(heartbeat);
+      }
+
       return res.end(JSON.stringify(result));
     }
- 
+
     res.writeHead(404, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ ok: false, error: 'Not found' }));
   } catch (error) {

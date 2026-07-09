@@ -759,7 +759,15 @@ const server = http.createServer(async (req, res) => {
       // см. 08_BACKLOG.md §0г). Статус теперь всегда 200 — успех/неудача
       // сигналится через `ok` в теле, не через HTTP-статус.
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      const heartbeat = setInterval(() => res.write(' '), HEARTBEAT_INTERVAL_MS);
+      const heartbeat = setInterval(() => {
+        try {
+          if (!res.writableEnded && !res.destroyed) {
+            res.write(' ');
+          }
+        } catch (err) {
+          console.error('[HEARTBEAT] write failed (client likely disconnected):', err.message);
+        }
+      }, HEARTBEAT_INTERVAL_MS);
 
       let result;
       try {

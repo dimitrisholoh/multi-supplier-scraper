@@ -17,6 +17,26 @@ let isInitialized = false;
 let isInitializing = false;
 let listingNavigationBusy = false;
 
+// Session-level кэш (вариант a): тексты карточек уже отсканированных
+// listing-страниц, keyed by pageNumber. TTL-based, in-memory, НЕ переживает
+// рестарт воркера (module-level Map, не Supabase/Redis).
+const listingCardsCache = new Map(); // pageNumber -> { cards: string[], scannedAt: number }
+const LISTING_CACHE_TTL_MS = Number(process.env.FULL_WORKER_CACHE_TTL_MS || 300000); // 5 мин default
+
+function getCachedListingCards(pageNumber) {
+  const entry = listingCardsCache.get(pageNumber);
+  if (!entry) return null;
+  if (Date.now() - entry.scannedAt > LISTING_CACHE_TTL_MS) {
+    listingCardsCache.delete(pageNumber);
+    return null;
+  }
+  return entry.cards;
+}
+
+function setCachedListingCards(pageNumber, cards) {
+  listingCardsCache.set(pageNumber, { cards, scannedAt: Date.now() });
+}
+
 // ✅ FIX 1: buildSlug функция
 function buildSlug(value) {
   if (!value) return 'unknown';
@@ -316,17 +336,27 @@ async function closeModal(page) {
 async function findCardIndexByProductCode(page, supplierProductCode) {
   const cards = page.locator('.product-miniature');
   const count = await cards.count();
- 
+
   for (let i = 0; i < count; i++) {
     const text = await cards.nth(i).innerText().catch(() => '');
     if (text.includes(supplierProductCode)) {
       return i;
     }
   }
- 
+
   return -1;
 }
- 
+
+async function extractCardTexts(page) {
+  const cards = page.locator('.product-miniature');
+  const count = await cards.count();
+  const texts = [];
+  for (let i = 0; i < count; i++) {
+    texts.push(await cards.nth(i).innerText().catch(() => ''));
+  }
+  return texts;
+}
+
 async function clickQuickviewByCardIndex(page, cardIndex, supplierProductCode) {
   let capturedUrl = null;
  
@@ -634,28 +664,59 @@ async function enrichJulianProduct(rawProductId) {
     listingNavigationBusy = true;
     try {
     let found = null;
-    
- 
-    for (let pageNumber = 1; pageNumber <= maxPages; pageNumber++) {
-      await openListing(globalPage, pageNumber);
 
-      const currentUrl = globalPage.url();
-      if (currentUrl.includes('login') || !currentUrl.includes('b2bfashion.online')) {
-        console.log('[SESSION] Redirect detected after openListing (url:', currentUrl, '), re-initializing...');
-        isInitialized = false;
-        await initSession();
+    for (let pageNumber = 1; pageNumber <= maxPages; pageNumber++) {
+      const cachedCards = getCachedListingCards(pageNumber);
+      let cardTexts;
+      let navigatedThisIteration = false;
+
+      if (cachedCards) {
+        console.log('[CACHE] listing page hit:', {
+          pageNumber,
+          age_ms: Date.now() - listingCardsCache.get(pageNumber).scannedAt,
+          cards: cachedCards.length
+        });
+        cardTexts = cachedCards;
+      } else {
         await openListing(globalPage, pageNumber);
+        navigatedThisIteration = true;
+
+        const currentUrl = globalPage.url();
+        if (currentUrl.includes('login') || !currentUrl.includes('b2bfashion.online')) {
+          console.log('[SESSION] Redirect detected after openListing (url:', currentUrl, '), re-initializing...');
+          isInitialized = false;
+          await initSession();
+          await openListing(globalPage, pageNumber);
+        }
+
+        cardTexts = await extractCardTexts(globalPage);
+        setCachedListingCards(pageNumber, cardTexts);
       }
 
-      const cardIndex = await findCardIndexByProductCode(globalPage, supplierProductCode);
- 
+      const cardIndex = cardTexts.findIndex(text => text.includes(supplierProductCode));
+
       if (cardIndex >= 0) {
-        console.log('Product card found:', { supplierProductCode, pageNumber, cardIndex });
+        if (!navigatedThisIteration) {
+          console.log('[CACHE] re-navigating to matched page for live DOM click:', { pageNumber, cardIndex });
+          await openListing(globalPage, pageNumber);
+
+          const currentUrl = globalPage.url();
+          if (currentUrl.includes('login') || !currentUrl.includes('b2bfashion.online')) {
+            console.log('[SESSION] Redirect detected after openListing (url:', currentUrl, '), re-initializing...');
+            isInitialized = false;
+            await initSession();
+            await openListing(globalPage, pageNumber);
+          }
+        }
+
+        console.log('Product card found:', {
+          supplierProductCode, pageNumber, cardIndex, from_cache: !navigatedThisIteration
+        });
         found = { pageNumber, cardIndex };
         break;
       }
- 
-      console.log('Product not found on page:', { supplierProductCode, pageNumber });
+
+      console.log('Product not found on page:', { supplierProductCode, pageNumber, from_cache: !!cachedCards });
     }
  
     if (!found) {

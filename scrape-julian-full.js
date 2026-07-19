@@ -234,8 +234,14 @@ async function login(page) {
   await page.fill('input[type="password"]', process.env.JULIAN_PASSWORD);
   await page.keyboard.press('Enter');
   await page.waitForTimeout(12000);
- 
+
   console.log('Login completed. URL:', page.url());
+
+  const passwordFieldStillPresent = await page.locator('input[type="password"]').count();
+  const stillOnLoginUrl = page.url().includes('login') || !page.url().includes('b2bfashion.online');
+  if (passwordFieldStillPresent > 0 || stillOnLoginUrl) {
+    throw new Error(`LOGIN_FAILED: password field present=${passwordFieldStillPresent > 0}, stillOnLoginUrl=${stillOnLoginUrl}, url=${page.url()}`);
+  }
 }
 
 async function initSession() {
@@ -681,16 +687,25 @@ async function enrichJulianProduct(rawProductId) {
         await openListing(globalPage, pageNumber);
         navigatedThisIteration = true;
 
-        const currentUrl = globalPage.url();
+        let currentUrl = globalPage.url();
         if (currentUrl.includes('login') || !currentUrl.includes('b2bfashion.online')) {
           console.log('[SESSION] Redirect detected after openListing (url:', currentUrl, '), re-initializing...');
           isInitialized = false;
           await initSession();
           await openListing(globalPage, pageNumber);
+
+          currentUrl = globalPage.url();
+          if (currentUrl.includes('login') || !currentUrl.includes('b2bfashion.online')) {
+            throw new Error(`LOGIN_FAILED: still on login/off-domain after retry, url=${currentUrl}, page=${pageNumber}`);
+          }
         }
 
         cardTexts = await extractCardTexts(globalPage);
-        setCachedListingCards(pageNumber, cardTexts);
+        if (cardTexts.length > 0) {
+          setCachedListingCards(pageNumber, cardTexts);
+        } else {
+          console.log('[CACHE] skip caching empty page result:', { pageNumber });
+        }
       }
 
       const cardIndex = cardTexts.findIndex(text => text.includes(supplierProductCode));
@@ -700,12 +715,17 @@ async function enrichJulianProduct(rawProductId) {
           console.log('[CACHE] re-navigating to matched page for live DOM click:', { pageNumber, cardIndex });
           await openListing(globalPage, pageNumber);
 
-          const currentUrl = globalPage.url();
+          let currentUrl = globalPage.url();
           if (currentUrl.includes('login') || !currentUrl.includes('b2bfashion.online')) {
             console.log('[SESSION] Redirect detected after openListing (url:', currentUrl, '), re-initializing...');
             isInitialized = false;
             await initSession();
             await openListing(globalPage, pageNumber);
+
+            currentUrl = globalPage.url();
+            if (currentUrl.includes('login') || !currentUrl.includes('b2bfashion.online')) {
+              throw new Error(`LOGIN_FAILED: still on login/off-domain after retry (live-click path), url=${currentUrl}, page=${pageNumber}`);
+            }
           }
         }
 

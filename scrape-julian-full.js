@@ -100,6 +100,19 @@ async function reportGateSignal(kind, detail) {
   }
 }
 
+async function reportGateOutcome(rawProductId, ok) {
+  try {
+    const url = `${process.env.SUPABASE_URL}/rest/v1/rpc/gate_report_outcome`;
+    await axios.post(
+      url,
+      { p_supplier_slug: SUPPLIER_SLUG, p_raw_product_id: rawProductId, p_ok: ok },
+      { headers: getSupabaseHeaders(), timeout: 15000 }
+    );
+  } catch (err) {
+    console.error('[GATE] failed to report outcome (non-fatal):', err.message);
+  }
+}
+
 const GATE_IGNORE_PATTERNS = [
   /^Product card not found in listing:/,
   /^CARD_MISMATCH:/,
@@ -938,6 +951,7 @@ const server = http.createServer(async (req, res) => {
 
       const gateSignal = classifyGateSignal(result);
       if (gateSignal) await reportGateSignal(gateSignal, result.error);
+      await reportGateOutcome(rawProductId, result.ok === true);
 
       return res.end(JSON.stringify(result));
     }

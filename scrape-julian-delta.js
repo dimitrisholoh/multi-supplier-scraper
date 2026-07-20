@@ -11,7 +11,23 @@ const MAX_PAGES = Number(process.env.MAX_PAGES || 1);
 const BATCH_SIZE = Number(process.env.BATCH_SIZE || 50);
  
 const LISTING_URL = process.env.JULIAN_LISTING_URL || 'https://b2bfashion.online/306-all';
- 
+
+function getSupabaseHeaders() {
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+  if (!process.env.SUPABASE_URL) throw new Error('SUPABASE_URL is missing');
+  if (!key) throw new Error('SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY is missing');
+  return { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };
+}
+
+async function checkSupplierGate() {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/supplier_gate_state?supplier_slug=eq.${SUPPLIER_SLUG}&select=status,cooldown_until`;
+  const response = await axios.get(url, { headers: getSupabaseHeaders(), timeout: 15000 });
+  const gate = response.data?.[0];
+  const blocked = gate && gate.status === 'blocked' &&
+    (!gate.cooldown_until || new Date(gate.cooldown_until) > new Date());
+  return { blocked: Boolean(blocked), gate };
+}
+
 // ─── UTILS ───────────────────────────────────────────────
  
 function cleanText(value) {
@@ -457,6 +473,12 @@ async function sendInBatches(allProducts) {
 // ─── MAIN ─────────────────────────────────────────────────
  
 async function run() {
+  const gateCheck = await checkSupplierGate();
+  if (gateCheck.blocked) {
+    console.log(`[GATE] julian-fashion blocked until ${gateCheck.gate.cooldown_until} — skipping delta scan entirely`);
+    return;
+  }
+
   const browser = await chromium.launch({
     headless: true,
     chromiumSandbox: false,

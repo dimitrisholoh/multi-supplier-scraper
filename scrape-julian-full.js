@@ -841,6 +841,7 @@ async function enrichJulianProduct(rawProductId) {
       enrichment_status: 'error',
       enrichment_needed: true,
       enrichment_reason: [error.message],
+      enriched_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     }).catch(updateError => {
       console.error('Failed to mark enrichment error:', updateError.message);

@@ -439,7 +439,13 @@ async function clickQuickviewByCardIndex(page, cardIndex, supplierProductCode) {
  
     if (!json) throw new Error('No quickview response and no captured URL');
     if (!json.product) throw new Error('No product in quickview response');
- 
+
+    const openedReference = cleanText(json.product.reference);
+    const expectedCode = cleanText(supplierProductCode);
+    if (openedReference && expectedCode && openedReference !== expectedCode) {
+      throw new Error(`CARD_MISMATCH: expected ${expectedCode}, got ${openedReference}`);
+    }
+
     return {
       product: json.product,
       quickview_html: json.quickview_html || ''
@@ -615,6 +621,12 @@ async function enrichJulianProduct(rawProductId) {
           const json = directResponse.data;
           if (!json.product) throw new Error('No product in quickview response');
 
+          const openedReferenceQV = cleanText(json.product.reference);
+          const expectedCodeQV = cleanText(supplierProductCode);
+          if (openedReferenceQV && expectedCodeQV && openedReferenceQV !== expectedCodeQV) {
+            throw new Error(`CARD_MISMATCH: expected ${expectedCodeQV}, got ${openedReferenceQV}`);
+          }
+
           const updatePayload = buildEnrichedPayload(rawProduct, json.product, json.quickview_html || '');
           const updated = await updateRawProduct(rawProductId, updatePayload);
 
@@ -639,6 +651,12 @@ async function enrichJulianProduct(rawProductId) {
             const rawDataProduct = await globalPage.getAttribute('#product-details', 'data-product');
             const product = JSON.parse(rawDataProduct);
             const fullHtml = await globalPage.content();
+
+            const openedReferenceDP = cleanText(product.reference);
+            const expectedCodeDP = cleanText(supplierProductCode);
+            if (openedReferenceDP && expectedCodeDP && openedReferenceDP !== expectedCodeDP) {
+              throw new Error(`CARD_MISMATCH: expected ${expectedCodeDP}, got ${openedReferenceDP}`);
+            }
 
             const updatePayload = buildEnrichedPayload(rawProduct, product, fullHtml);
             const updated = await updateRawProduct(rawProductId, updatePayload);

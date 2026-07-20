@@ -74,7 +74,47 @@ function getSupabaseHeaders() {
     Prefer: 'return=representation'
   };
 }
- 
+
+async function getGateStatus() {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/supplier_gate_state?supplier_slug=eq.${SUPPLIER_SLUG}&select=status,cooldown_until`;
+  const response = await axios.get(url, { headers: getSupabaseHeaders(), timeout: 15000 });
+  return response.data?.[0] || null;
+}
+
+async function tryGateProbe() {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/rpc/gate_try_probe`;
+  const response = await axios.post(url, { p_supplier_slug: SUPPLIER_SLUG }, { headers: getSupabaseHeaders(), timeout: 15000 });
+  return response.data === true;
+}
+
+async function reportGateSignal(kind, detail) {
+  try {
+    const url = `${process.env.SUPABASE_URL}/rest/v1/rpc/gate_report_signal`;
+    await axios.post(
+      url,
+      { p_supplier_slug: SUPPLIER_SLUG, p_kind: kind, p_detail: detail ? String(detail).slice(0, 500) : null },
+      { headers: getSupabaseHeaders(), timeout: 15000 }
+    );
+  } catch (err) {
+    console.error('[GATE] failed to report signal (non-fatal):', err.message);
+  }
+}
+
+const GATE_IGNORE_PATTERNS = [
+  /^Product card not found in listing:/,
+  /^CARD_MISMATCH:/,
+  /^Raw product not found:/,
+  /^Wrong supplier_slug:/,
+  /^supplier_product_code is missing$/
+];
+
+function classifyGateSignal(result) {
+  if (result.ok) return 'ok';
+  const msg = String(result.error || '');
+  if (GATE_IGNORE_PATTERNS.some(re => re.test(msg))) return null;
+  return 'suspect';
+}
+
 async function getRawProduct(rawProductId) {
   const url = `${process.env.SUPABASE_URL}/rest/v1/${RAW_PRODUCTS_TABLE}?id=eq.${rawProductId}&limit=1`;
  
@@ -853,6 +893,24 @@ const server = http.createServer(async (req, res) => {
         throw new Error('raw_product_id is missing');
       }
 
+      const gate = await getGateStatus();
+      const cooldownActive = gate && gate.cooldown_until && new Date(gate.cooldown_until) > new Date();
+      if (gate && gate.status === 'blocked') {
+        if (cooldownActive) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({
+            ok: false, error: 'GATE_BLOCKED', gate_status: gate.status, cooldown_until: gate.cooldown_until
+          }));
+        }
+        const wonProbe = await tryGateProbe();
+        if (!wonProbe) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({
+            ok: false, error: 'GATE_BLOCKED', gate_status: gate.status, note: 'probe slot already taken'
+          }));
+        }
+      }
+
       // Headers коммитятся сразу, чтобы периодические write() ниже не давали
       // Railway edge посчитать соединение простаивающим (5-мин idle-лимит,
       // см. 08_BACKLOG.md §0г). Статус теперь всегда 200 — успех/неудача
@@ -876,6 +934,9 @@ const server = http.createServer(async (req, res) => {
       } finally {
         clearInterval(heartbeat);
       }
+
+      const gateSignal = classifyGateSignal(result);
+      if (gateSignal) await reportGateSignal(gateSignal, result.error);
 
       return res.end(JSON.stringify(result));
     }

@@ -1,15 +1,21 @@
 const { chromium } = require('playwright');
 const axios = require('axios');
 const crypto = require('crypto');
- 
+const os = require('os');
+
 const SUPPLIER_NAME = 'Julian Fashion Srl';
 const SUPPLIER_SLUG = 'julian-fashion';
- 
+
 const LIMIT_PRODUCTS = Number(process.env.LIMIT_PRODUCTS || 50);
 const START_PAGE = Number(process.env.START_PAGE || 1);
 const MAX_PAGES = Number(process.env.MAX_PAGES || 1);
 const BATCH_SIZE = Number(process.env.BATCH_SIZE || 50);
- 
+
+const MAX_RUN_MINUTES = Number(process.env.MAX_RUN_MINUTES || 20);
+const LOCK_NAME = 'delta:julian';
+const LOCK_STALE_MINUTES = Number(process.env.LOCK_STALE_MINUTES || 30);
+const LOCKED_BY = `${os.hostname()}:${process.pid}`;
+
 const LISTING_URL = process.env.JULIAN_LISTING_URL || 'https://b2bfashion.online/306-all';
 
 function getSupabaseHeaders() {
@@ -26,6 +32,59 @@ async function checkSupplierGate() {
   const blocked = gate && gate.status === 'blocked' &&
     (!gate.cooldown_until || new Date(gate.cooldown_until) > new Date());
   return { blocked: Boolean(blocked), gate };
+}
+
+async function tryAcquireRunLock() {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/rpc/try_acquire_workflow_lock`;
+  const response = await axios.post(
+    url,
+    { p_workflow_name: LOCK_NAME, p_locked_by: LOCKED_BY, p_stale_minutes: LOCK_STALE_MINUTES },
+    { headers: getSupabaseHeaders(), timeout: 15000 }
+  );
+  return response.data === true;
+}
+
+async function releaseRunLock() {
+  try {
+    const url = `${process.env.SUPABASE_URL}/rest/v1/rpc/release_workflow_lock`;
+    await axios.post(url, { p_workflow_name: LOCK_NAME, p_locked_by: LOCKED_BY },
+      { headers: getSupabaseHeaders(), timeout: 15000 });
+  } catch (err) {
+    console.error('[LOCK] release failed (non-fatal):', err.message);
+  }
+}
+
+async function checkLockStillOwned() {
+  try {
+    const url = `${process.env.SUPABASE_URL}/rest/v1/workflow_locks?workflow_name=eq.${encodeURIComponent(LOCK_NAME)}&select=locked_by`;
+    const response = await axios.get(url, { headers: getSupabaseHeaders(), timeout: 15000 });
+    const row = response.data?.[0];
+    return row && row.locked_by === LOCKED_BY;
+  } catch (err) {
+    console.error('[LOCK] ownership check failed:', err.message);
+    console.log('[LOCK] ownership check failed — fail-open');
+    return true;
+  }
+}
+
+async function writeAbortSyncLog(status, startedAtIso, pagesScanned, itemsCollected) {
+  try {
+    await axios.post(
+      `${process.env.SUPABASE_URL}/rest/v1/sync_logs`,
+      {
+        supplier_slug: SUPPLIER_SLUG,
+        sync_type: 'delta',
+        status,
+        items_total: itemsCollected,
+        error_message: `pages_scanned=${pagesScanned}, max_pages=${MAX_PAGES}, reason=${status}`,
+        started_at: startedAtIso,
+        finished_at: new Date().toISOString()
+      },
+      { headers: { ...getSupabaseHeaders(), Prefer: 'return=minimal' }, timeout: 15000 }
+    );
+  } catch (err) {
+    console.error('[SYNC LOG] abort log insert failed (non-fatal):', err.message);
+  }
 }
 
 // ─── UTILS ───────────────────────────────────────────────
@@ -473,67 +532,107 @@ async function sendInBatches(allProducts) {
 // ─── MAIN ─────────────────────────────────────────────────
  
 async function run() {
-  const gateCheck = await checkSupplierGate();
-  if (gateCheck.blocked) {
-    console.log(`[GATE] julian-fashion blocked until ${gateCheck.gate.cooldown_until} — skipping delta scan entirely`);
+  const startedAtIso = new Date().toISOString();
+  const startedAtMs = Date.now();
+
+  const acquired = await tryAcquireRunLock();
+  if (!acquired) {
+    console.log(`[LOCK] ${LOCK_NAME} run already in progress — skipping this run`);
     return;
   }
 
-  const browser = await chromium.launch({
-    headless: true,
-    chromiumSandbox: false,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--single-process',
-      '--no-zygote'
-    ]
-  });
- 
-  const page = await browser.newPage({
-    viewport: { width: 1440, height: 1400 }
-  });
- 
-  page.setDefaultTimeout(30000);
- 
-  const allProducts = [];
- 
   try {
-    await login(page);
- 
-    const END_PAGE = START_PAGE + MAX_PAGES - 1;
-    console.log(`[DELTA] Scanning pages ${START_PAGE} to ${END_PAGE}`);
- 
-    for (let currentPage = START_PAGE; currentPage <= END_PAGE; currentPage++) {
-      const productCount = await openListing(page, currentPage);
- 
-      if (!productCount) {
-        console.log('[DELTA] No products found. Stop pagination.');
-        break;
-      }
- 
-      const pageProducts = await collectProductsFromListing(page, currentPage);
-      allProducts.push(...pageProducts);
- 
-      if (currentPage < END_PAGE) {
-        await page.waitForTimeout(3000 + Math.random() * 2000);
-      }
+    const gateCheck = await checkSupplierGate();
+    if (gateCheck.blocked) {
+      console.log(`[GATE] julian-fashion blocked until ${gateCheck.gate.cooldown_until} — skipping delta scan entirely`);
+      return;
     }
- 
-    console.log('========================');
-    console.log('[DELTA] SCAN FINISHED. Total products:', allProducts.length);
-    console.log('========================');
- 
-    if (!allProducts.length) {
-      throw new Error('No products collected');
+
+    const browser = await chromium.launch({
+      headless: true,
+      chromiumSandbox: false,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--single-process',
+        '--no-zygote'
+      ]
+    });
+
+    const page = await browser.newPage({
+      viewport: { width: 1440, height: 1400 }
+    });
+
+    page.setDefaultTimeout(30000);
+
+    const allProducts = [];
+    let pagesScanned = 0;
+    let abortReason = null;
+
+    try {
+      await login(page);
+
+      const END_PAGE = START_PAGE + MAX_PAGES - 1;
+      console.log(`[DELTA] Scanning pages ${START_PAGE} to ${END_PAGE}`);
+
+      for (let currentPage = START_PAGE; currentPage <= END_PAGE; currentPage++) {
+        // единая точка проверки: gate / лок / таймаут
+        const [gate, lockOwned] = await Promise.all([checkSupplierGate(), checkLockStillOwned()]);
+        const elapsedMinutes = (Date.now() - startedAtMs) / 60000;
+
+        if (gate.blocked) {
+          abortReason = 'aborted_gate';
+          console.log(`[GATE] blocked mid-scan at page ${currentPage} — clean abort`);
+          break;
+        }
+        if (!lockOwned) {
+          abortReason = 'aborted_lock_lost';
+          console.log(`[LOCK] ownership lost at page ${currentPage} — clean abort`);
+          break;
+        }
+        if (elapsedMinutes > MAX_RUN_MINUTES) {
+          abortReason = 'aborted_timeout';
+          console.log(`[TIMEOUT] MAX_RUN_MINUTES=${MAX_RUN_MINUTES} exceeded at page ${currentPage} — clean abort`);
+          break;
+        }
+
+        const productCount = await openListing(page, currentPage);
+
+        if (!productCount) {
+          console.log('[DELTA] No products found. Stop pagination.');
+          break;
+        }
+
+        const pageProducts = await collectProductsFromListing(page, currentPage);
+        allProducts.push(...pageProducts);
+        pagesScanned++;
+
+        if (currentPage < END_PAGE) {
+          await page.waitForTimeout(3000 + Math.random() * 2000);
+        }
+      }
+
+      console.log('========================');
+      console.log('[DELTA] SCAN FINISHED. Total products:', allProducts.length, 'Pages scanned:', pagesScanned);
+      console.log('========================');
+
+      if (allProducts.length) {
+        await sendInBatches(allProducts);
+      } else if (!abortReason) {
+        throw new Error('No products collected');
+      }
+
+      if (abortReason) {
+        await writeAbortSyncLog(abortReason, startedAtIso, pagesScanned, allProducts.length);
+      }
+
+    } finally {
+      await browser.close();
     }
- 
-    await sendInBatches(allProducts);
- 
   } finally {
-    await browser.close();
+    await releaseRunLock();
   }
 }
  

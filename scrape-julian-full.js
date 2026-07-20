@@ -603,7 +603,21 @@ function buildEnrichedPayload(rawProduct, product, quickviewHtml) {
     updated_at: new Date().toISOString()
   };
 }
- 
+
+function buildPageSearchOrder(foundOnPage, maxPages) {
+  const order = [];
+  const seen = new Set();
+  if (foundOnPage && Number.isInteger(foundOnPage) && foundOnPage > 0) {
+    for (const p of [foundOnPage, foundOnPage - 1, foundOnPage + 1, foundOnPage - 2, foundOnPage + 2]) {
+      if (p >= 1 && !seen.has(p)) { order.push(p); seen.add(p); }
+    }
+  }
+  for (let p = 1; p <= maxPages; p++) {
+    if (!seen.has(p)) { order.push(p); seen.add(p); }
+  }
+  return order;
+}
+
 async function enrichJulianProduct(rawProductId) {
   console.log('==============================');
   console.log('JULIAN FULL ENRICHMENT START');
@@ -627,7 +641,10 @@ async function enrichJulianProduct(rawProductId) {
 
     // ✅ FIX 3: maxPages 3 → 10
     const maxPages = Number(process.env.JULIAN_FULL_MAX_PAGES || 10);
- 
+    const foundOnPage = Number.isInteger(rawProduct.found_on_page) && rawProduct.found_on_page > 0
+      ? rawProduct.found_on_page
+      : null;
+
     let directUrl = null;
     let isQuickviewUrl = false;
     const supplierUrl = rawProduct.supplier_product_url;
@@ -742,7 +759,11 @@ async function enrichJulianProduct(rawProductId) {
     try {
     let found = null;
 
-    for (let pageNumber = 1; pageNumber <= maxPages; pageNumber++) {
+    const pageSearchOrder = buildPageSearchOrder(foundOnPage, maxPages);
+    console.log('[ENRICH] page search order:', pageSearchOrder,
+      foundOnPage ? `(prioritized around found_on_page=${foundOnPage})` : '(sequential, no found_on_page)');
+
+    for (const pageNumber of pageSearchOrder) {
       const cachedCards = getCachedListingCards(pageNumber);
       let cardTexts;
       let navigatedThisIteration = false;

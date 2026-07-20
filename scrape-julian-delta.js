@@ -424,7 +424,8 @@ async function collectProductsFromListing(page, pageNumber) {
       supplier_product_code: productCode,
       supplier_product_url: data.product_url || null,
       listing_url: buildPageUrl(pageNumber),
- 
+      found_on_page: pageNumber,
+
       brand_raw: cleanText(data.brand),
       title_raw: null,
       description_raw: null,

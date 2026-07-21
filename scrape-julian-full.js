@@ -618,7 +618,7 @@ function buildPageSearchOrder(foundOnPage, maxPages) {
   return order;
 }
 
-async function enrichJulianProduct(rawProductId) {
+async function enrichJulianProduct(rawProductId, { debug = false } = {}) {
   console.log('==============================');
   console.log('JULIAN FULL ENRICHMENT START');
   console.log('raw_product_id:', rawProductId);
@@ -758,6 +758,7 @@ async function enrichJulianProduct(rawProductId) {
     listingNavigationBusy = true;
     try {
     let found = null;
+    const debugPages = debug ? [] : null;
 
     const pageSearchOrder = buildPageSearchOrder(foundOnPage, maxPages);
     console.log('[ENRICH] page search order:', pageSearchOrder,
@@ -800,6 +801,10 @@ async function enrichJulianProduct(rawProductId) {
         }
       }
 
+      if (debug) {
+        debugPages.push({ pageNumber, cardCount: cardTexts.length, cardTexts });
+      }
+
       const cardIndex = cardTexts.findIndex(text => text.includes(supplierProductCode));
 
       if (cardIndex >= 0) {
@@ -830,7 +835,18 @@ async function enrichJulianProduct(rawProductId) {
 
       console.log('Product not found on page:', { supplierProductCode, pageNumber, from_cache: !!cachedCards });
     }
- 
+
+    if (debug) {
+      return {
+        ok: false,
+        debug: true,
+        found: Boolean(found),
+        supplier_product_code: supplierProductCode,
+        page_search_order: pageSearchOrder,
+        pages: debugPages
+      };
+    }
+
     if (!found) {
       throw new Error(`Product card not found in listing: ${supplierProductCode}`);
     }
@@ -923,6 +939,7 @@ const server = http.createServer(async (req, res) => {
 
       const payload = await readJsonBody(req);
       const rawProductId = payload.raw_product_id || payload.id;
+      const debugMode = payload.debug === true;
 
       if (!rawProductId) {
         throw new Error('raw_product_id is missing');
@@ -963,16 +980,18 @@ const server = http.createServer(async (req, res) => {
 
       let result;
       try {
-        result = await enrichJulianProduct(rawProductId);
+        result = await enrichJulianProduct(rawProductId, { debug: debugMode });
       } catch (error) {
         result = { ok: false, error: error.message };
       } finally {
         clearInterval(heartbeat);
       }
 
-      const gateSignal = classifyGateSignal(result);
-      if (gateSignal) await reportGateSignal(gateSignal, result.error);
-      await reportGateOutcome(rawProductId, result.ok === true);
+      if (!debugMode) {
+        const gateSignal = classifyGateSignal(result);
+        if (gateSignal) await reportGateSignal(gateSignal, result.error);
+        await reportGateOutcome(rawProductId, result.ok === true);
+      }
 
       return res.end(JSON.stringify(result));
     }

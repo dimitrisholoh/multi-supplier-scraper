@@ -618,7 +618,7 @@ function buildPageSearchOrder(foundOnPage, maxPages) {
   return order;
 }
 
-async function enrichJulianProduct(rawProductId, { debug = false } = {}) {
+async function enrichJulianProduct(rawProductId, { debug = false, maxPagesOverride = null } = {}) {
   console.log('==============================');
   console.log('JULIAN FULL ENRICHMENT START');
   console.log('raw_product_id:', rawProductId);
@@ -640,7 +640,11 @@ async function enrichJulianProduct(rawProductId, { debug = false } = {}) {
     await ensureSession();
 
     // ✅ FIX 3: maxPages 3 → 10
-    const maxPages = Number(process.env.JULIAN_FULL_MAX_PAGES || 10);
+    // maxPagesOverride — только для debug-режима (см. вызов ниже), обычные
+    // вызовы всегда используют JULIAN_FULL_MAX_PAGES из env, как раньше.
+    const maxPages = (debug && Number.isInteger(maxPagesOverride) && maxPagesOverride > 0)
+      ? maxPagesOverride
+      : Number(process.env.JULIAN_FULL_MAX_PAGES || 10);
     const foundOnPage = Number.isInteger(rawProduct.found_on_page) && rawProduct.found_on_page > 0
       ? rawProduct.found_on_page
       : null;
@@ -940,6 +944,12 @@ const server = http.createServer(async (req, res) => {
       const payload = await readJsonBody(req);
       const rawProductId = payload.raw_product_id || payload.id;
       const debugMode = payload.debug === true;
+      // max_pages из payload учитывается только вместе с debug:true и только
+      // в разумных пределах (1-50) — защита от случайного огромного значения.
+      const requestedMaxPages = Number(payload.max_pages);
+      const maxPagesOverride = (debugMode && Number.isInteger(requestedMaxPages) && requestedMaxPages > 0 && requestedMaxPages <= 50)
+        ? requestedMaxPages
+        : null;
 
       if (!rawProductId) {
         throw new Error('raw_product_id is missing');
@@ -980,7 +990,7 @@ const server = http.createServer(async (req, res) => {
 
       let result;
       try {
-        result = await enrichJulianProduct(rawProductId, { debug: debugMode });
+        result = await enrichJulianProduct(rawProductId, { debug: debugMode, maxPagesOverride });
       } catch (error) {
         result = { ok: false, error: error.message };
       } finally {

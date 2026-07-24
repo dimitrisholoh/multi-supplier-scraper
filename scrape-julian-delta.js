@@ -16,6 +16,13 @@ const LOCK_NAME = 'delta:julian';
 const LOCK_STALE_MINUTES = Number(process.env.LOCK_STALE_MINUTES || 270);
 const LOCKED_BY = `${os.hostname()}:${process.pid}`;
 
+// ✅ п.4/5: политика "одна плохая страница не роняет весь скан"
+const POISON_PAGE_CONSECUTIVE_THRESHOLD = Number(process.env.POISON_PAGE_CONSECUTIVE_THRESHOLD || 2);
+const POISON_PAGE_RATE_THRESHOLD = Number(process.env.POISON_PAGE_RATE_THRESHOLD || 0.05);
+const POISON_PAGE_MIN_SAMPLE = Number(process.env.POISON_PAGE_MIN_SAMPLE || 20);
+// ✅ п.6: батчи отправляются по ходу скана, не одним махом в конце
+const FLUSH_EVERY_PAGES = Number(process.env.FLUSH_EVERY_PAGES || 10);
+
 const LISTING_URL = process.env.JULIAN_LISTING_URL || 'https://b2bfashion.online/306-all';
 
 function getSupabaseHeaders() {
@@ -570,7 +577,11 @@ async function run() {
 
     const allProducts = [];
     let pagesScanned = 0;
+    let totalItemsCollected = 0;
     let abortReason = null;
+    let consecutiveFailures = 0;
+    let failedPages = 0;
+    let pagesSinceFlush = 0;
 
     try {
       await login(page);
@@ -599,16 +610,61 @@ async function run() {
           break;
         }
 
-        const productCount = await openListing(page, currentPage);
+        // ✅ п.4: одна плохая страница — try/catch на уровне страницы,
+        // не всего прогона
+        let productCount;
+        let pageProducts;
+        try {
+          productCount = await openListing(page, currentPage);
 
-        if (!productCount) {
-          console.log('[DELTA] No products found. Stop pagination.');
-          break;
+          if (!productCount) {
+            console.log('[DELTA] No products found. Stop pagination.');
+            break;
+          }
+
+          pageProducts = await collectProductsFromListing(page, currentPage);
+        } catch (pageError) {
+          failedPages++;
+          consecutiveFailures++;
+          console.error(
+            `[PAGE ERROR] page ${currentPage} failed (consecutive:${consecutiveFailures}, total:${failedPages}):`,
+            pageError.message
+          );
+
+          // ✅ п.5: 2+ подряд ИЛИ >5% за прогон (после минимальной выборки
+          // в 20 попыток — единичный сбой в начале не должен читаться как
+          // 33%-ная катастрофа)
+          const attempted = pagesScanned + failedPages;
+          const failureRate = attempted > 0 ? failedPages / attempted : 0;
+          const enoughSample = attempted >= POISON_PAGE_MIN_SAMPLE;
+
+          if (
+            consecutiveFailures >= POISON_PAGE_CONSECUTIVE_THRESHOLD ||
+            (enoughSample && failureRate > POISON_PAGE_RATE_THRESHOLD)
+          ) {
+            abortReason = 'aborted_poison_pages';
+            console.log(
+              `[POISON PAGE] abort at page ${currentPage} — consecutive:${consecutiveFailures}, rate:${(failureRate * 100).toFixed(1)}%`
+            );
+            break;
+          }
+
+          continue;
         }
 
-        const pageProducts = await collectProductsFromListing(page, currentPage);
+        consecutiveFailures = 0;
         allProducts.push(...pageProducts);
+        totalItemsCollected += pageProducts.length;
         pagesScanned++;
+        pagesSinceFlush++;
+
+        // ✅ п.6: прогрессивная отправка — не ждём конца скана
+        if (pagesSinceFlush >= FLUSH_EVERY_PAGES) {
+          console.log(`[FLUSH] Sending ${allProducts.length} products from last ${pagesSinceFlush} pages...`);
+          await sendInBatches(allProducts);
+          allProducts.length = 0;
+          pagesSinceFlush = 0;
+        }
 
         if (currentPage < END_PAGE) {
           await page.waitForTimeout(3000 + Math.random() * 2000);
@@ -616,17 +672,22 @@ async function run() {
       }
 
       console.log('========================');
-      console.log('[DELTA] SCAN FINISHED. Total products:', allProducts.length, 'Pages scanned:', pagesScanned);
+      console.log(
+        '[DELTA] SCAN FINISHED. Pages scanned:', pagesScanned,
+        'Failed pages:', failedPages,
+        'Total items collected:', totalItemsCollected,
+        'Unflushed remainder:', allProducts.length
+      );
       console.log('========================');
 
       if (allProducts.length) {
         await sendInBatches(allProducts);
-      } else if (!abortReason) {
+      } else if (!abortReason && pagesScanned === 0) {
         throw new Error('No products collected');
       }
 
       if (abortReason) {
-        await writeAbortSyncLog(abortReason, startedAtIso, pagesScanned, allProducts.length);
+        await writeAbortSyncLog(abortReason, startedAtIso, pagesScanned, totalItemsCollected);
       }
 
     } finally {

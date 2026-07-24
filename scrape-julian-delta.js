@@ -11,9 +11,9 @@ const START_PAGE = Number(process.env.START_PAGE || 1);
 const MAX_PAGES = Number(process.env.MAX_PAGES || 1);
 const BATCH_SIZE = Number(process.env.BATCH_SIZE || 50);
 
-const MAX_RUN_MINUTES = Number(process.env.MAX_RUN_MINUTES || 180);
+const MAX_RUN_MINUTES = Number(process.env.MAX_RUN_MINUTES || 240);
 const LOCK_NAME = 'delta:julian';
-const LOCK_STALE_MINUTES = Number(process.env.LOCK_STALE_MINUTES || 270);
+const LOCK_STALE_MINUTES = Number(process.env.LOCK_STALE_MINUTES || 360);
 const LOCKED_BY = `${os.hostname()}:${process.pid}`;
 
 // ✅ п.4/5: политика "одна плохая страница не роняет весь скан"

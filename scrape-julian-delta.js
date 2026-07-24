@@ -11,9 +11,9 @@ const START_PAGE = Number(process.env.START_PAGE || 1);
 const MAX_PAGES = Number(process.env.MAX_PAGES || 1);
 const BATCH_SIZE = Number(process.env.BATCH_SIZE || 50);
 
-const MAX_RUN_MINUTES = Number(process.env.MAX_RUN_MINUTES || 20);
+const MAX_RUN_MINUTES = Number(process.env.MAX_RUN_MINUTES || 180);
 const LOCK_NAME = 'delta:julian';
-const LOCK_STALE_MINUTES = Number(process.env.LOCK_STALE_MINUTES || 30);
+const LOCK_STALE_MINUTES = Number(process.env.LOCK_STALE_MINUTES || 270);
 const LOCKED_BY = `${os.hostname()}:${process.pid}`;
 
 const LISTING_URL = process.env.JULIAN_LISTING_URL || 'https://b2bfashion.online/306-all';

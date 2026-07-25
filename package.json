@@ -6,12 +6,13 @@
   "scripts": {
     "start": "node scrape-julian.js",
     "julian:delta": "node scrape-julian-delta.js",
-    "julian:full": "node scrape-julian-full.js"
+    "julian:full": "node scrape-julian-full.js",
+    "test": "node --test lib/*.test.js"
   },
   "dependencies": {
     "axios": "^1.7.2",
     "csv-parse": "^5.5.6",
     "dotenv": "^16.4.5",
-    "playwright": "^1.60.0"
+    "playwright": "1.61.1"
   }
 }

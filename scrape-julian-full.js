@@ -921,6 +921,14 @@ function readJsonBody(req) {
  
 const HEARTBEAT_INTERVAL_MS = Number(process.env.JULIAN_FULL_HEARTBEAT_MS || 60000);
 
+// ✅ Плановый self-restart — защита от протухания долгоживущей browser-сессии
+// (см. 09_DECISIONS.md, инциденты 2026-07-19 и 2026-07-24/25). Не exit(0) —
+// under restart policy 'On Failure' триггерит рестарт именно ненулевой код.
+const PROCESS_STARTED_AT = Date.now();
+const SELF_RESTART_AFTER_MS = Number(process.env.JULIAN_FULL_SELF_RESTART_HOURS || 6) * 60 * 60 * 1000;
+let activeRequestCount = 0;
+let selfRestartPending = false;
+
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && req.url === '/health') {
@@ -989,11 +997,13 @@ const server = http.createServer(async (req, res) => {
       }, HEARTBEAT_INTERVAL_MS);
 
       let result;
+      activeRequestCount++;
       try {
         result = await enrichJulianProduct(rawProductId, { debug: debugMode, maxPagesOverride });
       } catch (error) {
         result = { ok: false, error: error.message };
       } finally {
+        activeRequestCount--;
         clearInterval(heartbeat);
       }
 
@@ -1014,7 +1024,23 @@ const server = http.createServer(async (req, res) => {
     return res.end(JSON.stringify({ ok: false, error: error.message }));
   }
 });
- 
+
+setInterval(() => {
+  const uptimeMs = Date.now() - PROCESS_STARTED_AT;
+  if (uptimeMs < SELF_RESTART_AFTER_MS) return;
+
+  if (activeRequestCount > 0) {
+    if (!selfRestartPending) {
+      selfRestartPending = true;
+      console.log(`[SELF-RESTART] Threshold reached (${(uptimeMs / 3600000).toFixed(2)}h uptime) — waiting for ${activeRequestCount} active request(s) to finish before exiting`);
+    }
+    return;
+  }
+
+  console.log(`[SELF-RESTART] Scheduled restart after ${(uptimeMs / 3600000).toFixed(2)}h uptime`);
+  process.exit(1);
+}, 60000);
+
 server.listen(PORT, () => {
   console.log(`Julian full enrichment worker listening on port ${PORT}`);
   initSession().catch(err => {

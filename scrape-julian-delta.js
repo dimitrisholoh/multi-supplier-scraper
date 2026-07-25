@@ -1,4 +1,5 @@
 const { chromium } = require('playwright');
+const { parse } = require('csv-parse/sync');
 const axios = require('axios');
 const crypto = require('crypto');
 const os = require('os');
@@ -24,6 +25,13 @@ const POISON_PAGE_MIN_SAMPLE = Number(process.env.POISON_PAGE_MIN_SAMPLE || 20);
 const FLUSH_EVERY_PAGES = Number(process.env.FLUSH_EVERY_PAGES || 10);
 
 const LISTING_URL = process.env.JULIAN_LISTING_URL || 'https://b2bfashion.online/306-all';
+
+// ✅ Новая ветка: скачивание полного CSV-экспорта вместо обхода страниц
+// листинга — только для обновления цен/остатков УЖЕ известных товаров.
+// Discovery новых SKU / found_on_page для WF07 — по-прежнему только через
+// обычный постраничный путь (SOURCE_MODE='listing', дефолт, не меняется).
+const SOURCE_MODE = process.env.SOURCE_MODE || 'listing';
+const CSV_EXPORT_URL = process.env.JULIAN_CSV_EXPORT_URL || 'https://b2bfashion.online/module/bbapi/get_export';
 
 function getSupabaseHeaders() {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
@@ -166,7 +174,194 @@ function buildPageUrl(pageNumber) {
     ? `${LISTING_URL}?page=${pageNumber}`
     : LISTING_URL;
 }
- 
+
+// ── CSV EXPORT MODE ──────────────────────────────────────────
+// Логика зеркалит lib/adapter-julian.js (не импортирую этот файл — он
+// untracked/неиспользуемый локальный порт, см. reference-память проекта;
+// переиспользую тот же алгоритм внутри уже боевого файла).
+
+function stripSizePrefix(raw) {
+  if (raw == null) return null;
+  const s = String(raw).trim().replace(/^size:\s*/i, '').trim();
+  return s || null;
+}
+
+function parseQty(raw) {
+  if (raw == null || raw === '') return 0;
+  const n = Number(String(raw).trim());
+  return Number.isFinite(n) ? n : 0;
+}
+
+function computeRowPricing(row) {
+  const retailPrice = toNumber(row['retail price']);
+  let discountedPrice = toNumber(row['discounted price']);
+  // та же защита от аномалии "скидка >= розницы", что в lib/adapter-julian.js
+  if (discountedPrice != null && retailPrice != null && discountedPrice >= retailPrice) {
+    discountedPrice = null;
+  }
+  const finalPrice = discountedPrice ?? retailPrice;
+  const discountPercent = (retailPrice && finalPrice != null && finalPrice < retailPrice)
+    ? Math.round((1 - finalPrice / retailPrice) * 100)
+    : null;
+  return { retailPrice, finalPrice, discountPercent };
+}
+
+function buildProductFromCsvGroup(cod, rows) {
+  const first = rows[0];
+
+  const brand = cleanText(first.designer);
+  const seasonRaw = cleanText(first.season);
+  const isSale = String(seasonRaw || '').trim().toLowerCase() === 'sale';
+
+  // Товарный уровень — из первой строки группы (обратная совместимость с
+  // WF01/supplier_raw_products; это цена "первого варианта", не единая
+  // цена товара — точность по размерам см. variants_raw ниже, часть
+  // групп имеет разную цену на разные размеры одного cod).
+  const { retailPrice, finalPrice, discountPercent } = computeRowPricing(first);
+
+  const variantRows = rows
+    .map(r => ({
+      supplier_size: stripSizePrefix(r.size),
+      stock_quantity: parseQty(r.qty),
+      ...computeRowPricing(r)
+    }))
+    .filter(v => v.supplier_size);
+
+  const variantsRaw = variantRows.length
+    ? variantRows.map(v => ({
+        supplier_size: v.supplier_size,
+        supplier_sku: `${cod}-${v.supplier_size}`,
+        supplier_variant_code: `${cod}-${v.supplier_size}`,
+        stock_quantity: v.stock_quantity,
+        is_available: v.stock_quantity > 0,
+        supplier_retail_price: v.retailPrice,
+        supplier_final_price: v.finalPrice,
+        supplier_discount_percent: v.discountPercent,
+        currency: 'EUR',
+        raw_variant_json: v
+      }))
+    : [{
+        supplier_size: 'U',
+        supplier_sku: `${cod}-U`,
+        supplier_variant_code: `${cod}-U`,
+        stock_quantity: 1,
+        is_available: true,
+        supplier_retail_price: retailPrice,
+        supplier_final_price: finalPrice,
+        supplier_discount_percent: discountPercent,
+        currency: 'EUR',
+        raw_variant_json: { fallback: true, reason: 'No size rows in CSV group' }
+      }];
+
+  const totalStock = variantsRaw.reduce((sum, v) => sum + (Number(v.stock_quantity) || 0), 0);
+
+  const { hash: productHash, hashSource } = buildProductHash({
+    supplierFinalPrice: finalPrice,
+    supplierRetailPrice: retailPrice,
+    supplierDiscountPercent: discountPercent,
+    isActive: true,
+    isArchived: false,
+    totalStock
+  });
+
+  const brandSlug = buildSlug(brand);
+  const productKey = `${brandSlug}-${cod}-unknown`;
+
+  const imagesRaw = [first.foto1, first.foto2, first['foto 3']]
+    .map(url => (url ? String(url).trim() : null))
+    .filter(url => url && url.startsWith('http'))
+    .map((url, index) => ({
+      url, image_url: url, supplier_image_url: url,
+      position: index + 1, image_position: index + 1,
+      type: index === 0 ? 'main' : 'gallery',
+      image_type: index === 0 ? 'main' : 'gallery',
+      is_main: index === 0
+    }));
+
+  const scannedAt = new Date().toISOString();
+
+  return {
+    supplier_name: SUPPLIER_NAME,
+    supplier_slug: SUPPLIER_SLUG,
+    supplier_sku: cod,
+    supplier_product_code: cod,
+    supplier_product_url: null,   // ✅ п.4: CSV не даёт URL карточки
+    listing_url: null,            // ✅ п.4: не со страницы листинга
+    found_on_page: null,          // ✅ п.4: CSV не даёт номер страницы
+
+    brand_raw: brand,
+    title_raw: null,
+    description_raw: null,
+    gender_raw: null,
+    category_raw: null,
+    subcategory_raw: null,
+    type_raw: null,
+    color_raw: null,
+    season_raw: seasonRaw,
+    composition_raw: null,
+    made_in_raw: null,
+    size_and_fit_raw: null,
+
+    supplier_retail_price: retailPrice,
+    supplier_final_price: finalPrice,
+    supplier_discount_percent: discountPercent,
+    currency: 'EUR',
+    is_sale: isSale,
+
+    product_key: productKey,
+    product_hash: productHash,
+    hash_source: hashSource,
+
+    images_raw: imagesRaw,
+    variants_raw: variantsRaw,
+
+    raw_json: {
+      source: 'csv_export_delta',
+      cod,
+      rows_in_group: rows.length
+    },
+
+    scrape_status: 'ingested',
+    scan_mode: 'delta_csv',
+
+    is_active: true,
+    is_archived: false,
+
+    scanned_at: scannedAt,
+    ingested_at: scannedAt
+  };
+}
+
+async function downloadAndParseCsvExport(page) {
+  console.log('[CSV EXPORT] downloading:', CSV_EXPORT_URL);
+  const response = await page.context().request.get(CSV_EXPORT_URL, { timeout: 120000 });
+  if (!response.ok()) {
+    throw new Error(`CSV export request failed: HTTP ${response.status()}`);
+  }
+  // ✅ latin-1, как и исходный bulk-load файл — .text()/utf8 испортил бы
+  // акцентированные символы, поэтому декодируем сырой Buffer явно.
+  const buffer = await response.body();
+  const text = buffer.toString('latin1');
+
+  const rows = parse(text, { columns: true, skip_empty_lines: true, relax_quotes: true, bom: true });
+  console.log('[CSV EXPORT] rows parsed:', rows.length);
+
+  const grouped = new Map();
+  for (const row of rows) {
+    const cod = row.cod ? String(row.cod).trim() : '';
+    if (!cod) continue;
+    if (!grouped.has(cod)) grouped.set(cod, []);
+    grouped.get(cod).push(row);
+  }
+
+  const products = [];
+  for (const [cod, groupRows] of grouped) {
+    products.push(buildProductFromCsvGroup(cod, groupRows));
+  }
+  console.log('[CSV EXPORT] unique products:', products.length);
+  return products;
+}
+
 // ─── LOGIN ────────────────────────────────────────────────
  
 async function login(page) {
@@ -585,6 +780,21 @@ async function run() {
 
     try {
       await login(page);
+
+      if (SOURCE_MODE === 'csv_export') {
+        // ✅ Новая ветка: обновление цен/остатков УЖЕ известных товаров
+        // через полный CSV-экспорт, без обхода страниц листинга. Discovery
+        // новых SKU / found_on_page для WF07 этот путь не даёт — для этого
+        // по-прежнему нужен обычный SOURCE_MODE='listing' прогон.
+        console.log('[DELTA] SOURCE_MODE=csv_export — skipping listing pagination');
+        const products = await downloadAndParseCsvExport(page);
+        if (!products.length) {
+          throw new Error('CSV export parsed 0 products');
+        }
+        await sendInBatches(products);
+        console.log(`[DELTA] CSV EXPORT FINISHED. Products sent: ${products.length}`);
+        return;
+      }
 
       const END_PAGE = START_PAGE + MAX_PAGES - 1;
       console.log(`[DELTA] Scanning pages ${START_PAGE} to ${END_PAGE}`);

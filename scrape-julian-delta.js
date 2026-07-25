@@ -212,6 +212,7 @@ function buildProductFromCsvGroup(cod, rows) {
   const brand = cleanText(first.designer);
   const seasonRaw = cleanText(first.season);
   const isSale = String(seasonRaw || '').trim().toLowerCase() === 'sale';
+  const finalSeasonRaw = isSale ? null : seasonRaw;   // ✅ п.3: "Sale" — признак скидки, не сезон
 
   // Товарный уровень — из первой строки группы (обратная совместимость с
   // WF01/supplier_raw_products; это цена "первого варианта", не единая
@@ -283,7 +284,7 @@ function buildProductFromCsvGroup(cod, rows) {
   return {
     supplier_name: SUPPLIER_NAME,
     supplier_slug: SUPPLIER_SLUG,
-    supplier_sku: cod,
+    supplier_sku: null,   // ✅ п.6: Julian не даёт реальный SKU — не дублировать supplier_product_code
     supplier_product_code: cod,
     supplier_product_url: null,   // ✅ п.4: CSV не даёт URL карточки
     listing_url: null,            // ✅ п.4: не со страницы листинга
@@ -297,7 +298,7 @@ function buildProductFromCsvGroup(cod, rows) {
     subcategory_raw: null,
     type_raw: null,
     color_raw: null,
-    season_raw: seasonRaw,
+    season_raw: finalSeasonRaw,
     composition_raw: null,
     made_in_raw: null,
     size_and_fit_raw: null,
@@ -330,6 +331,24 @@ function buildProductFromCsvGroup(cod, rows) {
     scanned_at: scannedAt,
     ingested_at: scannedAt
   };
+}
+
+// ✅ п.1c: CSV-путь должен обновлять только УЖЕ известные товары —
+// discovery новых SKU остаётся за постраничным путём (только там есть
+// found_on_page, нужный full-worker'у для эффективного enrichment).
+async function fetchKnownProductCodes() {
+  const pageSize = 1000;
+  let offset = 0;
+  const codes = new Set();
+  while (true) {
+    const url = `${process.env.SUPABASE_URL}/rest/v1/supplier_raw_products?supplier_slug=eq.${SUPPLIER_SLUG}&select=supplier_product_code&limit=${pageSize}&offset=${offset}`;
+    const response = await axios.get(url, { headers: getSupabaseHeaders(), timeout: 30000 });
+    const rows = response.data || [];
+    rows.forEach(r => codes.add(r.supplier_product_code));
+    if (rows.length < pageSize) break;
+    offset += pageSize;
+  }
+  return codes;
 }
 
 async function downloadAndParseCsvExport(page) {
@@ -552,6 +571,7 @@ async function collectProductsFromListing(page, pageNumber) {
  
     const seasonRaw = cleanText(data.season);
     const isSale = String(seasonRaw || '').trim().toLowerCase() === 'sale';
+    const finalSeasonRaw = isSale ? null : seasonRaw;   // ✅ п.3: "Sale" — признак скидки, не сезон
  
     const brandSlug = buildSlug(data.brand);
     const productKey = `${brandSlug}-${productCode}-unknown`;
@@ -622,7 +642,7 @@ async function collectProductsFromListing(page, pageNumber) {
     const product = {
       supplier_name: SUPPLIER_NAME,
       supplier_slug: SUPPLIER_SLUG,
-      supplier_sku: productCode,
+      supplier_sku: null,   // ✅ п.6: Julian не даёт реальный SKU — не дублировать supplier_product_code
       supplier_product_code: productCode,
       supplier_product_url: data.product_url || null,
       listing_url: buildPageUrl(pageNumber),
@@ -636,7 +656,7 @@ async function collectProductsFromListing(page, pageNumber) {
       subcategory_raw: null,
       type_raw: null,
       color_raw: null,
-      season_raw: seasonRaw,
+      season_raw: finalSeasonRaw,
       composition_raw: null,
       made_in_raw: null,
       size_and_fit_raw: null,
@@ -791,8 +811,17 @@ async function run() {
         if (!products.length) {
           throw new Error('CSV export parsed 0 products');
         }
-        await sendInBatches(products);
-        console.log(`[DELTA] CSV EXPORT FINISHED. Products sent: ${products.length}`);
+        // ✅ п.1c: только апдейт уже известных товаров; новые коды —
+        // пропускаем, их найдёт постраничный путь с found_on_page.
+        const knownCodes = await fetchKnownProductCodes();
+        const knownProducts = products.filter(p => knownCodes.has(p.supplier_product_code));
+        const skippedCount = products.length - knownProducts.length;
+        console.log(`[DELTA] CSV filter: ${knownProducts.length} known / ${skippedCount} new (skipped, left for listing discovery)`);
+        if (!knownProducts.length) {
+          throw new Error('CSV export: 0 known products after filter (unexpected)');
+        }
+        await sendInBatches(knownProducts);
+        console.log(`[DELTA] CSV EXPORT FINISHED. Products sent: ${knownProducts.length} (skipped new: ${skippedCount})`);
         return;
       }
 
